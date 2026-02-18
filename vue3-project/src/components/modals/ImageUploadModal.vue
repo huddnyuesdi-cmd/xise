@@ -36,7 +36,7 @@
             <!-- 添加图片按钮 -->
             <div v-if="confirmedImages.length + localImages.length < maxImages" class="upload-item"
               @click="triggerFileInput()" :class="{ 'uploading': isUploading }">
-              <input ref="fileInput" type="file" accept="image/*" multiple @change="handleFileSelect"
+              <input ref="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/jpg" multiple @change="handleFileSelect"
                 style="display: none" />
               <div class="upload-placeholder">
                 <SvgIcon name="publish" class="upload-icon" :class="{ 'uploading': isUploading }" />

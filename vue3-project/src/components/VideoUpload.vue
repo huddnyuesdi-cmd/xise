@@ -5,11 +5,11 @@
       @dragover.prevent="!isUploading && (isDragOver = true)" @dragleave.prevent="isDragOver = false"
       @drop.prevent="!isUploading && handleFileDrop($event)">
 
-      <input ref="fileInput" type="file" accept="video/*" @change="handleFileSelect" style="display: none"
+      <input ref="fileInput" type="file" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-ms-wmv,video/x-flv,video/webm" @change="handleFileSelect" style="display: none"
         :disabled="isUploading" />
 
       <!-- 隐藏的封面图片文件输入框 -->
-      <input ref="coverInput" type="file" accept="image/*" @change="handleCoverSelect" style="display: none" />
+      <input ref="coverInput" type="file" accept="image/jpeg,image/png,image/webp,image/jpg" @change="handleCoverSelect" style="display: none" />
 
       <!-- 视频上传成功状态 -->
       <div v-if="videoData && !isUploading" class="video-success" @click="triggerFileInput()">
