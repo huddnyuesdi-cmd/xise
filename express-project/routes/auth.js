@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { HTTP_STATUS, RESPONSE_CODES, ERROR_MESSAGES } = require('../constants');
-const { pool, prisma, email: emailConfig, oauth2: oauth2Config, queue: queueConfig, geetest: geetestConfig, verification: verificationConfig } = require('../config/config');
-const { generateAccessToken, generateRefreshToken, verifyToken } = require('../utils/jwt');
+const { pool, prisma, email: emailConfig, oauth2: oauth2Config, queue: queueConfig, geetest: geetestConfig, verification: verificationConfig, jwt: jwtConfig } = require('../config/config');
+const { generateAccessToken, generateRefreshToken, verifyToken, parseExpiresInToMs } = require('../utils/jwt');
 const { authenticateToken } = require('../middleware/auth');
 const { getIPLocation, getRealIP } = require('../utils/ipLocation');
 const { sendEmailCode } = require('../utils/email');
@@ -758,7 +758,7 @@ router.post('/register', async (req, res) => {
         user_id: userId,
         token: accessToken,
         refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
         user_agent: userAgent,
         is_active: true
       }
@@ -851,7 +851,7 @@ router.post('/login', async (req, res) => {
         user_id: user.id,
         token: accessToken,
         refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
         user_agent: userAgent,
         is_active: true
       }
@@ -949,7 +949,7 @@ router.post('/refresh', async (req, res) => {
       data: {
         token: newAccessToken,
         refresh_token: newRefreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
         user_agent: userAgent
       }
     });
@@ -1012,7 +1012,7 @@ router.post('/token', async (req, res) => {
         user_id: user.id,
         token: accessToken,
         refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
         user_agent: userAgent,
         is_active: true
       }
@@ -1685,7 +1685,7 @@ router.get('/oauth2/callback', async (req, res) => {
         user_id: user.id,
         token: accessToken,
         refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
         user_agent: userAgent,
         is_active: true
       }
@@ -1988,7 +1988,7 @@ router.post('/oauth2/mobile-token', async (req, res) => {
         user_id: user.id,
         token: accessToken,
         refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
         user_agent: userAgent,
         is_active: true
       }

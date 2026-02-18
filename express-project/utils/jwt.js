@@ -48,10 +48,30 @@ function extractTokenFromHeader(req) {
   return null;
 }
 
+const DEFAULT_EXPIRES_MS = 15 * 24 * 60 * 60 * 1000; // 默认15天
+
+/**
+ * 将JWT过期时间字符串转换为毫秒数
+ * @param {string} expiresIn - 过期时间字符串 (如 "15d", "7d", "24h", "30m", "60s")
+ * @returns {number} 毫秒数
+ */
+function parseExpiresInToMs(expiresIn) {
+  const match = String(expiresIn).match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!match) {
+    return DEFAULT_EXPIRES_MS;
+  }
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  const multipliers = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+  return value * multipliers[unit];
+}
+
 module.exports = {
   generateAccessToken,
   generateRefreshToken,
   verifyToken,
   extractTokenFromHeader,
-  JWT_SECRET
+  parseExpiresInToMs,
+  JWT_SECRET,
+  JWT_EXPIRES_IN
 };

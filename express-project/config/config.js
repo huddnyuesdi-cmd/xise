@@ -56,7 +56,7 @@ const config = {
   // JWT配置
   jwt: {
     secret: process.env.JWT_SECRET || 'xiaoshiliu_secret_key_2025',
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    expiresIn: process.env.JWT_EXPIRES_IN || '15d',
     refreshExpiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d'
   },
 
