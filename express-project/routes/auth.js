@@ -918,9 +918,12 @@ router.post('/refresh', async (req, res) => {
     const redisResult = await validateRefreshToken(refresh_token, decoded.userId);
 
     let session = null;
-    if (redisResult === false) {
+    let oldAccessToken = null;
+    if (redisResult && !redisResult.valid) {
       return res.status(HTTP_STATUS.UNAUTHORIZED).json({ code: RESPONSE_CODES.UNAUTHORIZED, message: '刷新令牌无效或已过期' });
-    } else if (redisResult === null) {
+    } else if (redisResult && redisResult.valid) {
+      oldAccessToken = redisResult.accessToken;
+    } else {
       // Redis不可用，回退到数据库验证
       session = await prisma.userSession.findFirst({
         where: {
@@ -935,6 +938,7 @@ router.post('/refresh', async (req, res) => {
       if (!session) {
         return res.status(HTTP_STATUS.UNAUTHORIZED).json({ code: RESPONSE_CODES.UNAUTHORIZED, message: '刷新令牌无效或已过期' });
       }
+      oldAccessToken = session.token;
     }
 
     // 生成新的令牌
@@ -960,7 +964,6 @@ router.post('/refresh', async (req, res) => {
     }
 
     // 更新Redis中的会话
-    const oldAccessToken = session ? session.token : null;
     await refreshSession({
       oldAccessToken,
       oldRefreshToken: refresh_token,
@@ -982,7 +985,7 @@ router.post('/refresh', async (req, res) => {
         }
       });
     } else {
-      // Redis验证通过但没有DB session对象，更新DB中匹配的记录
+      // Redis验证通过，同步更新DB中匹配的记录
       await prisma.userSession.updateMany({
         where: {
           user_id: BigInt(decoded.userId),

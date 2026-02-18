@@ -143,7 +143,7 @@ async function invalidateAllUserSessions(userId) {
  * 验证刷新令牌
  * @param {string} refreshToken - 刷新令牌
  * @param {BigInt|number} userId - 用户ID
- * @returns {Promise<boolean|null>} true=有效, false=无效, null=Redis不可用
+ * @returns {Promise<{valid: boolean, accessToken: string|null}|null>} 验证结果对象或null(Redis不可用)
  */
 async function validateRefreshToken(refreshToken, userId) {
   try {
@@ -156,10 +156,10 @@ async function validateRefreshToken(refreshToken, userId) {
     const sessionData = await redis.get(`${SESSION_PREFIX}${accessToken}`);
     if (!sessionData) return null;
 
-    if (!sessionData.isActive) return false;
-    if (String(sessionData.userId) !== String(userId)) return false;
+    if (!sessionData.isActive) return { valid: false, accessToken: null };
+    if (String(sessionData.userId) !== String(userId)) return { valid: false, accessToken: null };
 
-    return true;
+    return { valid: true, accessToken };
   } catch (error) {
     console.error('Redis 验证刷新令牌失败:', error.message);
     return null;
