@@ -1389,9 +1389,11 @@ router.get('/sessions', adminAuth, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20
     const { user_display_id, is_active, sortField = 'created_at', sortOrder = 'desc' } = req.query
 
-    // 解析活跃状态过滤
+    // 解析活跃状态过滤（空字符串视为不过滤）
     let isActiveFilter
-    if (is_active !== undefined) isActiveFilter = is_active === 'true' || is_active === '1'
+    if (is_active !== undefined && is_active !== '') {
+      isActiveFilter = is_active === 'true' || is_active === '1'
+    }
 
     // 获取用户信息的辅助函数（用于按汐社号过滤）
     const getUserInfo = async (userId) => {
