@@ -21,7 +21,7 @@ const DEFAULT_SETTINGS = {
   'ai_content_review_enabled': false,   // 内容AI审核开关
   
   // 访问控制相关设置
-  'guest_access_restricted': false,     // 游客访问限制开关
+  'guest_access_restricted': process.env.GUEST_ACCESS_RESTRICTED === 'true',     // 游客访问限制开关
 
   // 初始设置页面配置
   'onboarding_interest_options': JSON.stringify([
