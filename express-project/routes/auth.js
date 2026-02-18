@@ -11,6 +11,7 @@ const { auditNickname, isAuditEnabled } = require('../utils/contentAudit');
 const { addIPLocationTask, addContentAuditTask, isQueueEnabled } = require('../utils/queueService');
 const { checkUsernameBannedWords } = require('../utils/bannedWordsChecker');
 const { isAiUsernameReviewEnabled } = require('../utils/aiReviewHelper');
+const { createSession, findSessionByRefreshToken, updateSession, deactivateSessionByToken, deactivateAllUserSessions } = require('../utils/sessionService');
 const svgCaptcha = require('svg-captcha');
 const path = require('path');
 const fs = require('fs');
@@ -752,16 +753,14 @@ router.post('/register', async (req, res) => {
     const accessToken = generateAccessToken({ userId: Number(userId), user_id });
     const refreshToken = generateRefreshToken({ userId: Number(userId), user_id });
 
-    // 保存会话
-    await prisma.userSession.create({
-      data: {
-        user_id: userId,
-        token: accessToken,
-        refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user_agent: userAgent,
-        is_active: true
-      }
+    // 保存会话到 Redis
+    await createSession({
+      user_id: userId,
+      token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      user_agent: userAgent,
+      is_active: true
     });
 
     // 获取完整用户信息
@@ -841,20 +840,15 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // 清除旧会话并保存新会话
-    await prisma.userSession.updateMany({
-      where: { user_id: user.id },
-      data: { is_active: false }
-    });
-    await prisma.userSession.create({
-      data: {
-        user_id: user.id,
-        token: accessToken,
-        refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user_agent: userAgent,
-        is_active: true
-      }
+    // 清除旧会话并保存新会话到 Redis
+    await deactivateAllUserSessions(user.id);
+    await createSession({
+      user_id: user.id,
+      token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      user_agent: userAgent,
+      is_active: true
     });
 
     // 更新用户对象中的location字段
@@ -906,16 +900,8 @@ router.post('/refresh', async (req, res) => {
     // 验证刷新令牌
     const decoded = verifyToken(refresh_token);
 
-    // 检查会话是否有效
-    const session = await prisma.userSession.findFirst({
-      where: {
-        user_id: BigInt(decoded.userId),
-        refresh_token: refresh_token,
-        is_active: true,
-        expires_at: { gt: new Date() }
-      },
-      select: { id: true }
-    });
+    // 检查会话是否有效（从 Redis 获取）
+    const session = await findSessionByRefreshToken(refresh_token, decoded.userId);
 
     if (!session) {
       return res.status(HTTP_STATUS.UNAUTHORIZED).json({ code: RESPONSE_CODES.UNAUTHORIZED, message: '刷新令牌无效或已过期' });
@@ -943,15 +929,12 @@ router.post('/refresh', async (req, res) => {
       });
     }
 
-    // 更新会话
-    await prisma.userSession.update({
-      where: { id: session.id },
-      data: {
-        token: newAccessToken,
-        refresh_token: newRefreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user_agent: userAgent
-      }
+    // 更新会话（Redis）
+    await updateSession(session.id, {
+      token: newAccessToken,
+      refresh_token: newRefreshToken,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      user_agent: userAgent
     });
 
     res.json({
@@ -1006,16 +989,14 @@ router.post('/token', async (req, res) => {
 
     const userAgent = req.headers['user-agent'] || '';
 
-    // 创建会话
-    await prisma.userSession.create({
-      data: {
-        user_id: user.id,
-        token: accessToken,
-        refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user_agent: userAgent,
-        is_active: true
-      }
+    // 创建会话（Redis）
+    await createSession({
+      user_id: user.id,
+      token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      user_agent: userAgent,
+      is_active: true
     });
 
     // 更新API密钥最后使用时间
@@ -1045,11 +1026,8 @@ router.post('/logout', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const token = req.token;
 
-    // 将当前会话设为无效
-    await prisma.userSession.updateMany({
-      where: { user_id: BigInt(userId), token: token },
-      data: { is_active: false }
-    });
+    // 将当前会话设为无效（从 Redis 删除）
+    await deactivateSessionByToken(token, userId);
 
     console.log(`用户退出成功 - 用户ID: ${userId}`);
 
@@ -1675,20 +1653,15 @@ router.get('/oauth2/callback', async (req, res) => {
     // 获取User-Agent
     const userAgent = req.headers['user-agent'] || '';
 
-    // 清除旧会话并保存新会话
-    await prisma.userSession.updateMany({
-      where: { user_id: user.id },
-      data: { is_active: false }
-    });
-    await prisma.userSession.create({
-      data: {
-        user_id: user.id,
-        token: accessToken,
-        refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user_agent: userAgent,
-        is_active: true
-      }
+    // 清除旧会话并保存新会话到 Redis
+    await deactivateAllUserSessions(user.id);
+    await createSession({
+      user_id: user.id,
+      token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      user_agent: userAgent,
+      is_active: true
     });
 
     // Format user response
@@ -1978,20 +1951,15 @@ router.post('/oauth2/mobile-token', async (req, res) => {
     // 获取User-Agent
     const userAgent = req.headers['user-agent'] || '';
 
-    // 清除旧会话并保存新会话
-    await prisma.userSession.updateMany({
-      where: { user_id: user.id },
-      data: { is_active: false }
-    });
-    await prisma.userSession.create({
-      data: {
-        user_id: user.id,
-        token: accessToken,
-        refresh_token: refreshToken,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        user_agent: userAgent,
-        is_active: true
-      }
+    // 清除旧会话并保存新会话到 Redis
+    await deactivateAllUserSessions(user.id);
+    await createSession({
+      user_id: user.id,
+      token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      user_agent: userAgent,
+      is_active: true
     });
 
     // Format user response
