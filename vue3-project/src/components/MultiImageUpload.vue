@@ -35,7 +35,7 @@
         :class="{ 'drag-over': isDragOver, 'uploading': isUploading }"
         @dragover.prevent="!isUploading && (isDragOver = true)" @dragleave.prevent="isDragOver = false"
         @drop.prevent="!isUploading && handleFileDrop($event)">
-        <input ref="fileInput" type="file" accept="image/*" multiple @change="handleFileSelect" style="display: none"
+        <input ref="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/jpg" multiple @change="handleFileSelect" style="display: none"
           :disabled="isUploading" />
 
         <div class="upload-placeholder">
