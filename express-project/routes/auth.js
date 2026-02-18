@@ -11,6 +11,7 @@ const { auditNickname, isAuditEnabled } = require('../utils/contentAudit');
 const { addIPLocationTask, addContentAuditTask, isQueueEnabled } = require('../utils/queueService');
 const { checkUsernameBannedWords } = require('../utils/bannedWordsChecker');
 const { isAiUsernameReviewEnabled } = require('../utils/aiReviewHelper');
+const { saveSession, invalidateSession, invalidateAllUserSessions, validateRefreshToken, refreshSession } = require('../utils/sessionService');
 const svgCaptcha = require('svg-captcha');
 const path = require('path');
 const fs = require('fs');
@@ -764,6 +765,9 @@ router.post('/register', async (req, res) => {
       }
     });
 
+    // 保存会话到Redis
+    await saveSession({ userId, accessToken, refreshToken, userAgent });
+
     // 获取完整用户信息
     const userInfo = await prisma.user.findUnique({
       where: { id: userId },
@@ -842,6 +846,7 @@ router.post('/login', async (req, res) => {
     }
 
     // 清除旧会话并保存新会话
+    await invalidateAllUserSessions(user.id);
     await prisma.userSession.updateMany({
       where: { user_id: user.id },
       data: { is_active: false }
@@ -856,6 +861,9 @@ router.post('/login', async (req, res) => {
         is_active: true
       }
     });
+
+    // 保存会话到Redis
+    await saveSession({ userId: user.id, accessToken, refreshToken, userAgent });
 
     // 更新用户对象中的location字段
     const userResponse = { ...user, id: Number(user.id), location: ipLocation };
@@ -906,19 +914,27 @@ router.post('/refresh', async (req, res) => {
     // 验证刷新令牌
     const decoded = verifyToken(refresh_token);
 
-    // 检查会话是否有效
-    const session = await prisma.userSession.findFirst({
-      where: {
-        user_id: BigInt(decoded.userId),
-        refresh_token: refresh_token,
-        is_active: true,
-        expires_at: { gt: new Date() }
-      },
-      select: { id: true }
-    });
+    // 优先从Redis验证刷新令牌
+    const redisResult = await validateRefreshToken(refresh_token, decoded.userId);
 
-    if (!session) {
+    let session = null;
+    if (redisResult === false) {
       return res.status(HTTP_STATUS.UNAUTHORIZED).json({ code: RESPONSE_CODES.UNAUTHORIZED, message: '刷新令牌无效或已过期' });
+    } else if (redisResult === null) {
+      // Redis不可用，回退到数据库验证
+      session = await prisma.userSession.findFirst({
+        where: {
+          user_id: BigInt(decoded.userId),
+          refresh_token: refresh_token,
+          is_active: true,
+          expires_at: { gt: new Date() }
+        },
+        select: { id: true, token: true }
+      });
+
+      if (!session) {
+        return res.status(HTTP_STATUS.UNAUTHORIZED).json({ code: RESPONSE_CODES.UNAUTHORIZED, message: '刷新令牌无效或已过期' });
+      }
     }
 
     // 生成新的令牌
@@ -943,16 +959,44 @@ router.post('/refresh', async (req, res) => {
       });
     }
 
-    // 更新会话
-    await prisma.userSession.update({
-      where: { id: session.id },
-      data: {
-        token: newAccessToken,
-        refresh_token: newRefreshToken,
-        expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
-        user_agent: userAgent
-      }
+    // 更新Redis中的会话
+    const oldAccessToken = session ? session.token : null;
+    await refreshSession({
+      oldAccessToken,
+      oldRefreshToken: refresh_token,
+      newAccessToken,
+      newRefreshToken,
+      userId: decoded.userId,
+      userAgent
     });
+
+    // 更新数据库中的会话
+    if (session) {
+      await prisma.userSession.update({
+        where: { id: session.id },
+        data: {
+          token: newAccessToken,
+          refresh_token: newRefreshToken,
+          expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
+          user_agent: userAgent
+        }
+      });
+    } else {
+      // Redis验证通过但没有DB session对象，更新DB中匹配的记录
+      await prisma.userSession.updateMany({
+        where: {
+          user_id: BigInt(decoded.userId),
+          refresh_token: refresh_token,
+          is_active: true
+        },
+        data: {
+          token: newAccessToken,
+          refresh_token: newRefreshToken,
+          expires_at: new Date(Date.now() + parseExpiresInToMs(jwtConfig.expiresIn)),
+          user_agent: userAgent
+        }
+      });
+    }
 
     res.json({
       code: RESPONSE_CODES.SUCCESS,
@@ -1018,6 +1062,9 @@ router.post('/token', async (req, res) => {
       }
     });
 
+    // 保存会话到Redis
+    await saveSession({ userId: user.id, accessToken, refreshToken, userAgent });
+
     // 更新API密钥最后使用时间
     await prisma.userApiKey.update({
       where: { id: apiKeyRecord.id },
@@ -1046,6 +1093,7 @@ router.post('/logout', authenticateToken, async (req, res) => {
     const token = req.token;
 
     // 将当前会话设为无效
+    await invalidateSession(token, userId);
     await prisma.userSession.updateMany({
       where: { user_id: BigInt(userId), token: token },
       data: { is_active: false }
@@ -1676,6 +1724,7 @@ router.get('/oauth2/callback', async (req, res) => {
     const userAgent = req.headers['user-agent'] || '';
 
     // 清除旧会话并保存新会话
+    await invalidateAllUserSessions(user.id);
     await prisma.userSession.updateMany({
       where: { user_id: user.id },
       data: { is_active: false }
@@ -1690,6 +1739,9 @@ router.get('/oauth2/callback', async (req, res) => {
         is_active: true
       }
     });
+
+    // 保存会话到Redis
+    await saveSession({ userId: user.id, accessToken, refreshToken, userAgent });
 
     // Format user response
     const userResponse = { ...user, id: Number(user.id) };
@@ -1979,6 +2031,7 @@ router.post('/oauth2/mobile-token', async (req, res) => {
     const userAgent = req.headers['user-agent'] || '';
 
     // 清除旧会话并保存新会话
+    await invalidateAllUserSessions(user.id);
     await prisma.userSession.updateMany({
       where: { user_id: user.id },
       data: { is_active: false }
@@ -1993,6 +2046,9 @@ router.post('/oauth2/mobile-token', async (req, res) => {
         is_active: true
       }
     });
+
+    // 保存会话到Redis
+    await saveSession({ userId: user.id, accessToken, refreshToken, userAgent });
 
     // Format user response
     const userResponse = { ...user, id: Number(user.id) };

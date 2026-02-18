@@ -2,9 +2,11 @@ const { verifyToken, extractTokenFromHeader } = require('../utils/jwt');
 const { prisma } = require('../config/config');
 const { HTTP_STATUS, RESPONSE_CODES } = require('../constants');
 const { isGuestAccessRestricted } = require('../utils/settingsService');
+const { validateSession } = require('../utils/sessionService');
 
 /**
  * 认证中间件 - 验证JWT token
+ * 优先从Redis验证会话，Redis不可用时回退到数据库
  */
 async function authenticateToken(req, res, next) {
   try {
@@ -77,7 +79,23 @@ async function authenticateToken(req, res, next) {
         });
       }
 
-      // 检查会话是否有效
+      // 优先从Redis验证会话
+      const redisResult = await validateSession(token, decoded.userId);
+
+      if (redisResult === true) {
+        // Redis验证通过
+        req.user = user;
+        req.token = token;
+        return next();
+      } else if (redisResult === false) {
+        // Redis明确标记会话无效
+        return res.status(HTTP_STATUS.UNAUTHORIZED).json({
+          code: RESPONSE_CODES.UNAUTHORIZED,
+          message: '会话已过期，请重新登录'
+        });
+      }
+
+      // Redis不可用(null)，回退到数据库验证
       const session = await prisma.userSession.findFirst({
         where: {
           user_id: BigInt(decoded.userId),
@@ -113,6 +131,7 @@ async function authenticateToken(req, res, next) {
 /**
  * 可选认证中间件 - 如果有token则验证，没有则跳过
  * 支持普通用户token和管理员token
+ * 优先从Redis验证会话，Redis不可用时回退到数据库
  */
 async function optionalAuth(req, res, next) {
   try {
@@ -172,22 +191,34 @@ async function optionalAuth(req, res, next) {
     });
 
     if (user) {
-      // 检查会话是否有效
-      const session = await prisma.userSession.findFirst({
-        where: {
-          user_id: BigInt(decoded.userId),
-          token: token,
-          is_active: true,
-          expires_at: { gt: new Date() }
-        },
-        select: { id: true }
-      });
+      // 优先从Redis验证会话
+      const redisResult = await validateSession(token, decoded.userId);
 
-      if (session) {
+      if (redisResult === true) {
+        // Redis验证通过
         req.user = user;
         req.token = token;
-      } else {
+      } else if (redisResult === false) {
+        // Redis明确标记无效
         req.user = null;
+      } else {
+        // Redis不可用(null)，回退到数据库验证
+        const session = await prisma.userSession.findFirst({
+          where: {
+            user_id: BigInt(decoded.userId),
+            token: token,
+            is_active: true,
+            expires_at: { gt: new Date() }
+          },
+          select: { id: true }
+        });
+
+        if (session) {
+          req.user = user;
+          req.token = token;
+        } else {
+          req.user = null;
+        }
       }
     } else {
       req.user = null;
