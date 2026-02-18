@@ -272,16 +272,23 @@ async function deactivateAllUserSessions(userId) {
     
     if (sessionIds.length === 0) return true;
     
+    // 批量获取所有会话
+    const sessionKeys = sessionIds.map(sid => getSessionIdKey(sid));
+    const sessionValues = await client.mget(sessionKeys);
+    
     const pipeline = client.pipeline();
     
-    for (const sid of sessionIds) {
-      const session = await redis.get(getSessionIdKey(sid));
-      if (session) {
-        pipeline.del(getSessionKey(session.token));
-        pipeline.del(getRefreshTokenKey(session.refresh_token));
-        pipeline.del(getSessionIdKey(sid));
-        pipeline.zrem(ALL_SESSIONS_KEY, String(sid));
+    for (let i = 0; i < sessionIds.length; i++) {
+      const raw = sessionValues[i];
+      if (raw) {
+        try {
+          const session = JSON.parse(raw);
+          pipeline.del(getSessionKey(session.token));
+          pipeline.del(getRefreshTokenKey(session.refresh_token));
+        } catch {}
       }
+      pipeline.del(sessionKeys[i]);
+      pipeline.zrem(ALL_SESSIONS_KEY, String(sessionIds[i]));
     }
     
     // 清空用户会话集合
@@ -355,12 +362,40 @@ async function deleteSessionById(sessionId) {
  * @returns {Promise<number>} 成功删除的数量
  */
 async function deleteSessionsByIds(sessionIds) {
-  let deletedCount = 0;
-  for (const sid of sessionIds) {
-    const success = await deleteSessionById(sid);
-    if (success) deletedCount++;
+  try {
+    const client = await redis.getRedisClient();
+    
+    // 批量获取所有会话
+    const sessionKeys = sessionIds.map(sid => getSessionIdKey(sid));
+    const sessionValues = await client.mget(sessionKeys);
+    
+    const pipeline = client.pipeline();
+    let deletedCount = 0;
+    
+    for (let i = 0; i < sessionIds.length; i++) {
+      const raw = sessionValues[i];
+      if (raw) {
+        try {
+          const session = JSON.parse(raw);
+          pipeline.del(getSessionKey(session.token));
+          pipeline.del(getRefreshTokenKey(session.refresh_token));
+          pipeline.del(sessionKeys[i]);
+          pipeline.srem(getUserSessionsKey(String(session.user_id)), String(sessionIds[i]));
+          pipeline.zrem(ALL_SESSIONS_KEY, String(sessionIds[i]));
+          deletedCount++;
+        } catch {}
+      }
+    }
+    
+    if (deletedCount > 0) {
+      await pipeline.exec();
+    }
+    
+    return deletedCount;
+  } catch (error) {
+    console.error('批量删除会话失败:', error.message);
+    return 0;
   }
-  return deletedCount;
 }
 
 /**
@@ -382,16 +417,35 @@ async function listSessions({ page = 1, limit = 20, user_display_id, is_active, 
     // 获取所有会话 ID（从有序集合中）
     const allSessionIds = await client.zrange(ALL_SESSIONS_KEY, 0, -1);
     
-    // 获取所有会话详情
+    if (allSessionIds.length === 0) {
+      return { sessions: [], total: 0 };
+    }
+    
+    // 批量获取所有会话详情
+    const sessionKeys = allSessionIds.map(sid => getSessionIdKey(sid));
+    const sessionValues = await client.mget(sessionKeys);
+    
     let sessions = [];
-    for (const sid of allSessionIds) {
-      const session = await redis.get(getSessionIdKey(sid));
-      if (session) {
-        sessions.push(session);
+    const staleIds = [];
+    for (let i = 0; i < allSessionIds.length; i++) {
+      if (sessionValues[i]) {
+        try {
+          sessions.push(JSON.parse(sessionValues[i]));
+        } catch {
+          staleIds.push(allSessionIds[i]);
+        }
       } else {
-        // 清理不存在的会话引用
-        await client.zrem(ALL_SESSIONS_KEY, sid);
+        staleIds.push(allSessionIds[i]);
       }
+    }
+    
+    // 清理不存在的会话引用
+    if (staleIds.length > 0) {
+      const pipeline = client.pipeline();
+      for (const sid of staleIds) {
+        pipeline.zrem(ALL_SESSIONS_KEY, sid);
+      }
+      await pipeline.exec();
     }
     
     // 应用过滤

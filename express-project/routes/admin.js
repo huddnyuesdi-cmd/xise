@@ -1416,14 +1416,24 @@ router.get('/sessions', adminAuth, async (req, res) => {
       getUserInfo
     })
 
-    // 格式化会话数据，获取用户信息
-    const formattedSessions = []
-    for (const s of sessions) {
-      let userInfo = s._userInfo
-      if (!userInfo) {
-        userInfo = await getUserInfo(s.user_id)
-      }
-      formattedSessions.push({
+    // 格式化会话数据，批量获取用户信息
+    const userIdsToFetch = [...new Set(sessions.filter(s => !s._userInfo).map(s => s.user_id))]
+    const userInfoMap = {}
+    if (userIdsToFetch.length > 0) {
+      try {
+        const users = await prisma.user.findMany({
+          where: { id: { in: userIdsToFetch.map(id => BigInt(id)) } },
+          select: { id: true, user_id: true, nickname: true }
+        })
+        for (const u of users) {
+          userInfoMap[String(u.id)] = u
+        }
+      } catch {}
+    }
+
+    const formattedSessions = sessions.map(s => {
+      const userInfo = s._userInfo || userInfoMap[String(s.user_id)]
+      return {
         id: Number(s.id),
         user_id: Number(s.user_id),
         refresh_token: s.refresh_token,
@@ -1433,8 +1443,8 @@ router.get('/sessions', adminAuth, async (req, res) => {
         created_at: s.created_at,
         user_display_id: userInfo?.user_id,
         nickname: userInfo?.nickname
-      })
-    }
+      }
+    })
 
     res.json({
       code: RESPONSE_CODES.SUCCESS,
