@@ -11,6 +11,7 @@ const settingsService = require('../utils/settingsService')
 const { notifySystemNotification, DEFAULT_TEMPLATES, loadCustomTemplates, updateCustomTemplate, clearCustomTemplates, renderTemplate, sendDiscordNotification } = require('../utils/notificationChannels')
 const { sendMail } = require('../utils/email')
 const { email: emailConfig, notificationChannels: notifChannelsConfig } = require('../config/config')
+const sessionService = require('../utils/sessionService')
 
 // ===================== AI审核设置 =====================
 // 使用 Redis 持久化的设置服务
@@ -1381,42 +1382,59 @@ router.delete('/follows', adminAuth, async (req, res) => {
   }
 })
 
-// ===================== 会话管理 =====================
+// ===================== 会话管理（从 Redis 获取） =====================
 router.get('/sessions', adminAuth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1
     const limit = parseInt(req.query.limit) || 20
-    const skip = (page - 1) * limit
     const { user_display_id, is_active, sortField = 'created_at', sortOrder = 'desc' } = req.query
 
-    const where = {}
-    if (user_display_id) where.user = { user_id: { contains: user_display_id } }
-    if (is_active !== undefined) where.is_active = is_active === 'true' || is_active === '1'
+    // 解析活跃状态过滤
+    let isActiveFilter
+    if (is_active !== undefined) isActiveFilter = is_active === 'true' || is_active === '1'
 
-    const [total, sessions] = await Promise.all([
-      prisma.userSession.count({ where }),
-      prisma.userSession.findMany({
-        where,
-        include: {
-          user: { select: { id: true, user_id: true, nickname: true } }
-        },
-        orderBy: { [sortField]: sortOrder.toLowerCase() },
-        take: limit,
-        skip: skip
+    // 获取用户信息的辅助函数（用于按汐社号过滤）
+    const getUserInfo = async (userId) => {
+      try {
+        const user = await prisma.user.findUnique({
+          where: { id: BigInt(userId) },
+          select: { id: true, user_id: true, nickname: true }
+        })
+        return user
+      } catch {
+        return null
+      }
+    }
+
+    const { sessions, total } = await sessionService.listSessions({
+      page,
+      limit,
+      user_display_id,
+      is_active: isActiveFilter,
+      sortField,
+      sortOrder: sortOrder.toLowerCase(),
+      getUserInfo
+    })
+
+    // 格式化会话数据，获取用户信息
+    const formattedSessions = []
+    for (const s of sessions) {
+      let userInfo = s._userInfo
+      if (!userInfo) {
+        userInfo = await getUserInfo(s.user_id)
+      }
+      formattedSessions.push({
+        id: Number(s.id),
+        user_id: Number(s.user_id),
+        refresh_token: s.refresh_token,
+        user_agent: s.user_agent,
+        is_active: s.is_active,
+        expires_at: s.expires_at,
+        created_at: s.created_at,
+        user_display_id: userInfo?.user_id,
+        nickname: userInfo?.nickname
       })
-    ])
-
-    const formattedSessions = sessions.map(s => ({
-      id: Number(s.id),
-      user_id: Number(s.user_id),
-      refresh_token: s.refresh_token,
-      user_agent: s.user_agent,
-      is_active: s.is_active,
-      expires_at: s.expires_at,
-      created_at: s.created_at,
-      user_display_id: s.user?.user_id,
-      nickname: s.user?.nickname
-    }))
+    }
 
     res.json({
       code: RESPONSE_CODES.SUCCESS,
@@ -1431,19 +1449,30 @@ router.get('/sessions', adminAuth, async (req, res) => {
 
 router.get('/sessions/:id', adminAuth, async (req, res) => {
   try {
-    const sessionId = BigInt(req.params.id)
-    const session = await prisma.userSession.findUnique({
-      where: { id: sessionId },
-      include: {
-        user: { select: { id: true, user_id: true, nickname: true } }
-      }
-    })
+    const sessionId = req.params.id
+    const session = await sessionService.findSessionById(sessionId)
 
     if (!session) {
       return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '会话不存在' })
     }
 
-    res.json({ code: RESPONSE_CODES.SUCCESS, data: session, message: 'success' })
+    // 获取用户信息
+    let userInfo = null
+    try {
+      userInfo = await prisma.user.findUnique({
+        where: { id: BigInt(session.user_id) },
+        select: { id: true, user_id: true, nickname: true }
+      })
+    } catch {}
+
+    const formattedSession = {
+      ...session,
+      id: Number(session.id),
+      user_id: Number(session.user_id),
+      user: userInfo ? { id: Number(userInfo.id), user_id: userInfo.user_id, nickname: userInfo.nickname } : null
+    }
+
+    res.json({ code: RESPONSE_CODES.SUCCESS, data: formattedSession, message: 'success' })
   } catch (error) {
     console.error('获取会话详情失败:', error)
     res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取失败' })
@@ -1463,16 +1492,18 @@ router.post('/sessions', adminAuth, async (req, res) => {
     const expires_at = new Date()
     expires_at.setDate(expires_at.getDate() + 30)
 
-    const session = await prisma.userSession.create({
-      data: {
-        user_id: BigInt(user_id),
-        token,
-        refresh_token,
-        user_agent: user_agent || '',
-        is_active: is_active !== undefined ? Boolean(is_active) : true,
-        expires_at
-      }
+    const session = await sessionService.createSession({
+      user_id: BigInt(user_id),
+      token,
+      refresh_token,
+      user_agent: user_agent || '',
+      is_active: is_active !== undefined ? Boolean(is_active) : true,
+      expires_at
     })
+
+    if (!session) {
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '创建失败' })
+    }
 
     res.json({ code: RESPONSE_CODES.SUCCESS, data: { id: Number(session.id) }, message: '会话创建成功' })
   } catch (error) {
@@ -1483,10 +1514,10 @@ router.post('/sessions', adminAuth, async (req, res) => {
 
 router.put('/sessions/:id', adminAuth, async (req, res) => {
   try {
-    const sessionId = BigInt(req.params.id)
+    const sessionId = req.params.id
     const { user_agent, is_active } = req.body
 
-    const session = await prisma.userSession.findUnique({ where: { id: sessionId } })
+    const session = await sessionService.findSessionById(sessionId)
     if (!session) {
       return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '会话不存在' })
     }
@@ -1495,7 +1526,7 @@ router.put('/sessions/:id', adminAuth, async (req, res) => {
     if (user_agent !== undefined) updateData.user_agent = user_agent
     if (is_active !== undefined) updateData.is_active = Boolean(is_active)
 
-    await prisma.userSession.update({ where: { id: sessionId }, data: updateData })
+    await sessionService.updateSession(sessionId, updateData)
     res.json({ code: RESPONSE_CODES.SUCCESS, message: '更新成功' })
   } catch (error) {
     console.error('更新会话失败:', error)
@@ -1505,8 +1536,8 @@ router.put('/sessions/:id', adminAuth, async (req, res) => {
 
 router.delete('/sessions/:id', adminAuth, async (req, res) => {
   try {
-    const sessionId = BigInt(req.params.id)
-    await prisma.userSession.delete({ where: { id: sessionId } })
+    const sessionId = req.params.id
+    await sessionService.deleteSessionById(sessionId)
     res.json({ code: RESPONSE_CODES.SUCCESS, message: '删除成功' })
   } catch (error) {
     console.error('删除会话失败:', error)
@@ -1521,8 +1552,7 @@ router.delete('/sessions', adminAuth, async (req, res) => {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '请提供要删除的ID列表' })
     }
 
-    const sessionIds = ids.map(id => BigInt(id))
-    await prisma.userSession.deleteMany({ where: { id: { in: sessionIds } } })
+    await sessionService.deleteSessionsByIds(ids)
 
     res.json({ code: RESPONSE_CODES.SUCCESS, message: '成功删除 ' + ids.length + ' 条记录' })
   } catch (error) {

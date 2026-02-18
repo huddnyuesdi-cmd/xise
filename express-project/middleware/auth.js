@@ -2,6 +2,7 @@ const { verifyToken, extractTokenFromHeader } = require('../utils/jwt');
 const { prisma } = require('../config/config');
 const { HTTP_STATUS, RESPONSE_CODES } = require('../constants');
 const { isGuestAccessRestricted } = require('../utils/settingsService');
+const { findActiveSession } = require('../utils/sessionService');
 
 /**
  * 认证中间件 - 验证JWT token
@@ -77,16 +78,8 @@ async function authenticateToken(req, res, next) {
         });
       }
 
-      // 检查会话是否有效
-      const session = await prisma.userSession.findFirst({
-        where: {
-          user_id: BigInt(decoded.userId),
-          token: token,
-          is_active: true,
-          expires_at: { gt: new Date() }
-        },
-        select: { id: true }
-      });
+      // 检查会话是否有效（从 Redis 获取）
+      const session = await findActiveSession(token, decoded.userId);
 
       if (!session) {
         return res.status(HTTP_STATUS.UNAUTHORIZED).json({
@@ -172,16 +165,8 @@ async function optionalAuth(req, res, next) {
     });
 
     if (user) {
-      // 检查会话是否有效
-      const session = await prisma.userSession.findFirst({
-        where: {
-          user_id: BigInt(decoded.userId),
-          token: token,
-          is_active: true,
-          expires_at: { gt: new Date() }
-        },
-        select: { id: true }
-      });
+      // 检查会话是否有效（从 Redis 获取）
+      const session = await findActiveSession(token, decoded.userId);
 
       if (session) {
         req.user = user;
