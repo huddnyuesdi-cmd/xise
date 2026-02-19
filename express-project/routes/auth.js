@@ -11,7 +11,7 @@ const { auditNickname, isAuditEnabled } = require('../utils/contentAudit');
 const { addIPLocationTask, addContentAuditTask, isQueueEnabled } = require('../utils/queueService');
 const { checkUsernameBannedWords } = require('../utils/bannedWordsChecker');
 const { isAiUsernameReviewEnabled } = require('../utils/aiReviewHelper');
-const { createSession, findSessionByRefreshToken, updateSession, deactivateSessionByToken, deactivateAllUserSessions } = require('../utils/sessionService');
+const { createSession, findSessionByRefreshToken, updateSession, deactivateSessionByToken } = require('../utils/sessionService');
 const svgCaptcha = require('svg-captcha');
 const path = require('path');
 const fs = require('fs');
@@ -840,8 +840,7 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // 清除旧会话并保存新会话到 Redis
-    await deactivateAllUserSessions(user.id);
+    // 保存新会话到 Redis（允许多设备同时登录）
     await createSession({
       user_id: user.id,
       token: accessToken,
@@ -1653,8 +1652,7 @@ router.get('/oauth2/callback', async (req, res) => {
     // 获取User-Agent
     const userAgent = req.headers['user-agent'] || '';
 
-    // 清除旧会话并保存新会话到 Redis
-    await deactivateAllUserSessions(user.id);
+    // 保存新会话到 Redis（允许多设备同时登录）
     await createSession({
       user_id: user.id,
       token: accessToken,
@@ -1951,8 +1949,7 @@ router.post('/oauth2/mobile-token', async (req, res) => {
     // 获取User-Agent
     const userAgent = req.headers['user-agent'] || '';
 
-    // 清除旧会话并保存新会话到 Redis
-    await deactivateAllUserSessions(user.id);
+    // 保存新会话到 Redis（允许多设备同时登录）
     await createSession({
       user_id: user.id,
       token: accessToken,
