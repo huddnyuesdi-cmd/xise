@@ -325,8 +325,11 @@ app.use('/api/notifications', notificationsRoutes);
 // 语义化版本比较：比较两个版本名称字符串（如 "1.0.0" vs "2.1.0"）
 // 返回值: 1 表示 a > b, -1 表示 a < b, 0 表示相等
 function compareVersionNames(a, b) {
-  const partsA = String(a).split('.').map(Number);
-  const partsB = String(b).split('.').map(Number);
+  // 移除非数字和点号的字符（如 -beta, -rc1 等预发布标识）
+  const cleanA = String(a).replace(/[^0-9.]/g, '');
+  const cleanB = String(b).replace(/[^0-9.]/g, '');
+  const partsA = cleanA.split('.').map(Number);
+  const partsB = cleanB.split('.').map(Number);
   const maxLen = Math.max(partsA.length, partsB.length);
   for (let i = 0; i < maxLen; i++) {
     const numA = partsA[i] || 0;
@@ -385,7 +388,13 @@ app.get('/api/app/check-update', async (req, res) => {
       hasUpdate = compareVersionNames(latestVersion.version_name, currentVersionName) > 0;
     } else {
       const currentCode = parseInt(version_code);
-      hasUpdate = !isNaN(currentCode) && latestVersion.version_code > currentCode;
+      if (isNaN(currentCode)) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({
+          code: RESPONSE_CODES.VALIDATION_ERROR,
+          message: 'version_code 必须为数字'
+        });
+      }
+      hasUpdate = latestVersion.version_code > currentCode;
     }
 
     if (!hasUpdate) {
