@@ -392,6 +392,67 @@ app.get('/api/app/check-update', async (req, res) => {
   }
 });
 
+// 公开API：上报App使用事件（无需认证）
+app.post('/api/app/report-event', async (req, res) => {
+  try {
+    const { device_id, event_type, version_code, platform, duration } = req.body;
+
+    if (!device_id || !event_type || !platform) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数: device_id, event_type, platform'
+      });
+    }
+
+    const validEvents = ['app_open', 'update_check', 'update_complete', 'usage_duration'];
+    if (!validEvents.includes(event_type)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '无效的事件类型，支持: ' + validEvents.join(', ')
+      });
+    }
+
+    if (!prisma.appUsageLog) {
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '使用记录功能暂不可用'
+      });
+    }
+
+    // 查找关联的版本记录
+    let versionId = null;
+    if (version_code && prisma.appVersion) {
+      const version = await prisma.appVersion.findFirst({
+        where: { version_code: parseInt(version_code), platform },
+        select: { id: true }
+      });
+      if (version) versionId = version.id;
+    }
+
+    await prisma.appUsageLog.create({
+      data: {
+        device_id: String(device_id).substring(0, 100),
+        event_type,
+        version_code: version_code ? parseInt(version_code) : null,
+        version_id: versionId,
+        platform: String(platform).substring(0, 20),
+        duration: event_type === 'usage_duration' && duration ? parseInt(duration) : null
+      }
+    });
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      message: '上报成功'
+    });
+  } catch (error) {
+    console.error('上报App事件失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: '上报失败'
+    });
+  }
+});
+
 // 错误处理中间件
 app.use((err, req, res, next) => {
   console.error('服务器错误:', err);

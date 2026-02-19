@@ -5002,6 +5002,94 @@ router.get('/app-versions', adminAuth, async (req, res) => {
   }
 })
 
+// 获取应用统计信息
+router.get('/app-versions/stats', adminAuth, async (req, res) => {
+  try {
+    if (!prisma.appUsageLog) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '使用记录功能暂不可用' })
+    }
+
+    // 总使用用户数（唯一设备数）
+    const totalDevicesResult = await prisma.appUsageLog.findMany({
+      where: { event_type: 'app_open' },
+      distinct: ['device_id'],
+      select: { device_id: true }
+    })
+    const totalUsers = totalDevicesResult.length
+
+    // 各版本更新人数统计
+    const versionUpdateStats = await prisma.appUsageLog.groupBy({
+      by: ['version_code'],
+      where: { event_type: 'update_complete', version_code: { not: null } },
+      _count: { device_id: true }
+    })
+
+    // 获取版本名称映射
+    let versionNames = {}
+    if (isAppVersionAvailable()) {
+      const versions = await prisma.appVersion.findMany({
+        select: { version_code: true, version_name: true, platform: true }
+      })
+      versions.forEach(v => {
+        versionNames[v.version_code] = v.version_name
+      })
+    }
+
+    const versionUpdates = versionUpdateStats.map(stat => ({
+      version_code: stat.version_code,
+      version_name: versionNames[stat.version_code] || `v${stat.version_code}`,
+      update_count: stat._count.device_id
+    })).sort((a, b) => b.version_code - a.version_code)
+
+    // 使用时长统计
+    const durationStats = await prisma.appUsageLog.aggregate({
+      where: { event_type: 'usage_duration', duration: { not: null } },
+      _sum: { duration: true },
+      _avg: { duration: true },
+      _count: { id: true }
+    })
+
+    // 今日活跃用户数
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const todayActiveResult = await prisma.appUsageLog.findMany({
+      where: { event_type: 'app_open', created_at: { gte: today } },
+      distinct: ['device_id'],
+      select: { device_id: true }
+    })
+    const todayActiveUsers = todayActiveResult.length
+
+    // 各平台用户数
+    const platformStats = await prisma.appUsageLog.groupBy({
+      by: ['platform'],
+      where: { event_type: 'app_open' },
+      _count: { device_id: true }
+    })
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: {
+        total_users: totalUsers,
+        today_active_users: todayActiveUsers,
+        version_updates: versionUpdates,
+        usage_duration: {
+          total_seconds: durationStats._sum.duration || 0,
+          avg_seconds: Math.round(durationStats._avg.duration || 0),
+          report_count: durationStats._count.id
+        },
+        platform_stats: platformStats.map(s => ({
+          platform: s.platform,
+          user_count: s._count.device_id
+        }))
+      },
+      message: 'success'
+    })
+  } catch (error) {
+    console.error('获取应用统计信息失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取统计失败' })
+  }
+})
+
 // 获取单个应用版本
 router.get('/app-versions/:id', adminAuth, async (req, res) => {
   try {

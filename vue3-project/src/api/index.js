@@ -926,6 +926,11 @@ export const adminApi = {
   // 获取单个应用版本详情
   getAppVersionDetail(versionId) {
     return request.get(`/admin/app-versions/${versionId}`)
+  },
+
+  // 获取应用统计信息
+  getAppVersionStats() {
+    return request.get('/admin/app-versions/stats')
   }
 }
 
