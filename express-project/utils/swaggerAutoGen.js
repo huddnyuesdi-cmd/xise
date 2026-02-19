@@ -28,7 +28,8 @@ const ROUTE_TAG_MAP = {
   '/api/admin': '管理后台',
   '/api/balance': '余额',
   '/api/creator-center': '创作中心',
-  '/api/notifications': '通知'
+  '/api/notifications': '通知',
+  '/api/app': '应用'
 };
 
 // 静态路由文件映射（作为自动检测的回退方案）
@@ -95,7 +96,8 @@ function detectRouteMounts(appJsPath) {
     const method = inlineMatch[1].toUpperCase();
     const routePath = inlineMatch[2];
     // 只检测 /api/ 开头的业务路由，跳过 swagger 等文档元数据路由
-    if (routePath.startsWith('/api/')) {
+    // 跳过包含模板字面量表达式的路径（如 ${SWAGGER_DOCS_PATH}），这些需手动维护
+    if (routePath.startsWith('/api/') && !routePath.includes('${')) {
       appRoutes.push({ method, path: routePath });
     }
   }
@@ -601,17 +603,20 @@ function mergeWithAutoGen(existingSpec, routesDir, appJsPath) {
  * @param {Object} [options] - 可选配置
  * @param {Array<{method: string, path: string}>} [options.extraRoutes=[]] - 额外路由（兼容手动指定）
  * @param {string} [options.appJsPath] - app.js路径（用于自动检测路由挂载和内联路由）
+ * @param {boolean} [options.strict=false] - 严格模式：发现缺失路由时抛出错误（用于CI检查）
  */
 function validateSwaggerCompleteness(swaggerSpec, routesDir, options = {}) {
   // 兼容旧调用方式: validateSwaggerCompleteness(spec, dir, [], appJsPath)
   let extraRoutes = [];
   let appJsPath;
+  let strict = false;
   if (Array.isArray(options)) {
     extraRoutes = options;
     appJsPath = arguments[3];
   } else {
     extraRoutes = options.extraRoutes || [];
     appJsPath = options.appJsPath;
+    strict = options.strict || false;
   }
   const specPaths = swaggerSpec.paths || {};
   const specEndpoints = new Set();
@@ -656,14 +661,184 @@ function validateSwaggerCompleteness(swaggerSpec, routesDir, options = {}) {
   }
 
   if (missing.length > 0) {
-    console.warn(`⚠️  Swagger文档缺失 ${missing.length} 个API路由:`);
-    missing.forEach(m => console.warn(`   - ${m}`));
-    console.warn('   请为以上路由添加 @swagger JSDoc注解或在swagger配置中手动添加');
+    const msg = `Swagger文档缺失 ${missing.length} 个API路由:\n` +
+      missing.map(m => `   - ${m}`).join('\n') +
+      '\n   请为以上路由添加 @swagger JSDoc注解或在swagger配置中手动添加';
+    console.warn(`⚠️  ${msg}`);
+    if (strict) {
+      throw new Error(msg);
+    }
   } else {
     console.log('✅ Swagger文档完整: 所有API路由均已覆盖');
   }
 
   return missing;
+}
+
+/**
+ * 从app.js中解析内联路由的完整信息（包含参数提取）
+ * 用于自动为app.js中直接定义的路由生成Swagger文档
+ * @param {string} appJsPath - app.js文件的绝对路径
+ * @returns {Array} 解析出的路由信息列表（格式与parseRouteFile一致）
+ */
+function parseAppInlineRoutes(appJsPath) {
+  const routes = [];
+  if (!appJsPath || !fs.existsSync(appJsPath)) {
+    return routes;
+  }
+
+  const source = fs.readFileSync(appJsPath, 'utf8');
+
+  // 匹配 app.METHOD('/api/xxx', ...) 模式
+  const routeRegex = /app\.(get|post|put|delete|patch)\(\s*['"`]([^'"`]+)['"`]/g;
+  let match;
+
+  while ((match = routeRegex.exec(source)) !== null) {
+    const method = match[1];
+    const routePath = match[2];
+    const matchPos = match.index;
+
+    // 只处理 /api/ 开头的业务路由
+    if (!routePath.startsWith('/api/')) continue;
+
+    // 跳过 swagger/jwt 等调试工具路由（它们在swagger.js中手动定义）
+    if (routePath.includes('swagger') || routePath.includes('jwt-') ||
+        routePath.includes('${SWAGGER_DOCS_PATH}') || routePath.includes('${JWT_TEST_TOKEN_PATH}')) continue;
+
+    // 获取路由处理函数的完整范围
+    const handlerEnd = findHandlerEnd(source, matchPos);
+    const afterContext = source.substring(matchPos, handlerEnd + 1);
+    const beforeContext = source.substring(Math.max(0, matchPos - 300), matchPos);
+
+    // 检测中间件
+    const middlewareMatch = afterContext.match(/app\.\w+\([^,]+,\s*([\w,\s]+),\s*(?:async\s+)?\(/);
+    let authRequired = false;
+    let isAdmin = false;
+    if (middlewareMatch) {
+      const middlewares = middlewareMatch[1].split(',').map(m => m.trim());
+      authRequired = middlewares.some(m => requiresAuth(m));
+      isAdmin = middlewares.some(m => m === 'adminAuth');
+    }
+
+    // 解析路径参数
+    const pathParams = [];
+    const paramRegex = /:(\w+)/g;
+    let paramMatch;
+    while ((paramMatch = paramRegex.exec(routePath)) !== null) {
+      pathParams.push(paramMatch[1]);
+    }
+
+    // 解析 query 参数
+    const queryParams = new Map();
+    const queryDestructRegex = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*req\.query/g;
+    let queryDestructMatch;
+    while ((queryDestructMatch = queryDestructRegex.exec(afterContext)) !== null) {
+      const cleanedContent = queryDestructMatch[1].replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const params = cleanedContent.split(',');
+      for (const param of params) {
+        let cleanParam = param.trim();
+        let defaultValue = undefined;
+        if (cleanParam.includes('=')) {
+          const parts = cleanParam.split('=');
+          cleanParam = parts[0].trim();
+          defaultValue = parts.slice(1).join('=').trim();
+        }
+        if (cleanParam.includes(':')) {
+          cleanParam = cleanParam.split(':')[0].trim();
+        }
+        if (cleanParam && !cleanParam.startsWith('...')) {
+          let type = 'string';
+          if (defaultValue !== undefined) {
+            if (/^\d+$/.test(defaultValue)) type = 'integer';
+            else if (defaultValue === 'true' || defaultValue === 'false') type = 'boolean';
+          }
+          queryParams.set(cleanParam, { type, required: false });
+        }
+      }
+    }
+    const queryDotRegex = /req\.query\.(\w+)/g;
+    let queryDotMatch;
+    while ((queryDotMatch = queryDotRegex.exec(afterContext)) !== null) {
+      const name = queryDotMatch[1];
+      if (!queryParams.has(name)) {
+        queryParams.set(name, { type: 'string', required: false });
+      }
+    }
+
+    // 解析 body 参数
+    const bodyParams = new Map();
+    if (['post', 'put', 'patch', 'delete'].includes(method)) {
+      const bodyDestructRegex = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*req\.body/g;
+      let bodyMatch;
+      while ((bodyMatch = bodyDestructRegex.exec(afterContext)) !== null) {
+        const cleanedContent = bodyMatch[1].replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        const params = cleanedContent.split(',');
+        for (const param of params) {
+          let cleanParam = param.trim();
+          let defaultValue = undefined;
+          if (cleanParam.includes('=')) {
+            const parts = cleanParam.split('=');
+            cleanParam = parts[0].trim();
+            defaultValue = parts.slice(1).join('=').trim();
+          }
+          if (cleanParam.includes(':')) {
+            cleanParam = cleanParam.split(':')[0].trim();
+          }
+          if (cleanParam && !cleanParam.startsWith('...')) {
+            let type = 'string';
+            if (defaultValue !== undefined) {
+              if (defaultValue === 'true' || defaultValue === 'false') type = 'boolean';
+              else if (defaultValue === '[]') type = 'array';
+              else if (defaultValue === '{}') type = 'object';
+              else if (/^\d+$/.test(defaultValue)) type = 'integer';
+            }
+            bodyParams.set(cleanParam, { type, default: defaultValue });
+          }
+        }
+      }
+      const bodyDotRegex = /req\.body\.(\w+)/g;
+      let bodyDotMatch;
+      while ((bodyDotMatch = bodyDotRegex.exec(afterContext)) !== null) {
+        const name = bodyDotMatch[1];
+        if (!bodyParams.has(name)) {
+          bodyParams.set(name, { type: 'string' });
+        }
+      }
+    }
+
+    // 提取路由行前的注释作为 summary
+    const commentMatch = beforeContext.match(/\/\/\s*(.+?)\s*$/m);
+    let summary = '';
+    if (commentMatch) {
+      summary = commentMatch[1];
+    }
+
+    // 自动分配tag：根据路由路径前缀匹配已知tag
+    let tag = '应用';
+    const swaggerPath = routePath.replace(/:(\w+)/g, '{$1}');
+    for (const [prefix, tagName] of Object.entries(ROUTE_TAG_MAP)) {
+      if (swaggerPath.startsWith(prefix)) {
+        tag = tagName;
+        break;
+      }
+    }
+
+    routes.push({
+      method,
+      path: swaggerPath,
+      rawPath: routePath,
+      authRequired,
+      isAdmin,
+      hasSwaggerAnnotation: false,
+      pathParams,
+      queryParams: Object.fromEntries(queryParams),
+      bodyParams: Object.fromEntries(bodyParams),
+      summary,
+      tag
+    });
+  }
+
+  return routes;
 }
 
 /**
@@ -719,6 +894,7 @@ module.exports = {
   mergeWithAutoGen,
   generateSwaggerPath,
   parseRouteFile,
+  parseAppInlineRoutes,
   detectRouteMounts,
   validateSwaggerCompleteness,
   watchRouteChanges,

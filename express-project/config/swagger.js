@@ -9,7 +9,7 @@
  */
 
 const path = require('path');
-const { scanRoutes, generateSwaggerPath, detectRouteMounts, ROUTE_TAG_MAP } = require('../utils/swaggerAutoGen');
+const { scanRoutes, generateSwaggerPath, detectRouteMounts, parseAppInlineRoutes, ROUTE_TAG_MAP } = require('../utils/swaggerAutoGen');
 
 const port = require('./config').server.port;
 
@@ -174,7 +174,8 @@ const baseSpec = {
     { name: '余额', description: '用户余额与积分管理' },
     { name: '创作中心', description: '创作者数据分析与收益' },
     { name: '通知', description: '用户通知管理' },
-    { name: '管理后台', description: '管理员专用接口' }
+    { name: '管理后台', description: '管理员专用接口' },
+    { name: '应用', description: 'App版本更新与事件上报' }
   ],
   paths: {}
 };
@@ -189,6 +190,10 @@ const { fileMap } = detectRouteMounts(appJsPath);
 // 扫描所有路由文件，提取路由和参数
 const allRoutes = scanRoutes(routesDir, fileMap);
 
+// 扫描app.js中的内联业务路由（如 /api/app/check-update）
+const inlineRoutes = parseAppInlineRoutes(appJsPath);
+allRoutes.push(...inlineRoutes);
+
 // 为每个路由生成Swagger文档
 for (const route of allRoutes) {
   if (!baseSpec.paths[route.path]) {
@@ -197,7 +202,7 @@ for (const route of allRoutes) {
   baseSpec.paths[route.path][route.method] = generateSwaggerPath(route);
 }
 
-console.log(`● Swagger自动生成完成: 共 ${allRoutes.length} 个路由（纯代码扫描，无需手动注解）`);
+console.log(`● Swagger自动生成完成: 共 ${allRoutes.length} 个路由（纯代码扫描，含 ${inlineRoutes.length} 个app.js内联路由）`);
 
 // 添加 app.js 中定义的内联路由文档
 baseSpec.paths['/api/health'] = {
