@@ -4954,6 +4954,307 @@ router.delete('/audit', adminAuth, async (req, res) => {
   }
 })
 
+// ===================== 应用版本管理 (App Version Management) =====================
+
+// 检查AppVersion模型是否可用
+const isAppVersionAvailable = () => {
+  return prisma.appVersion !== undefined
+}
+
+// 获取应用版本列表
+router.get('/app-versions', adminAuth, async (req, res) => {
+  try {
+    if (!isAppVersionAvailable()) {
+      return res.status(503).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '应用版本功能暂不可用，请先运行数据库迁移: npx prisma generate && npx prisma db push'
+      })
+    }
+
+    const page = parseInt(req.query.page) || 1
+    const limit = parseInt(req.query.limit) || 20
+    const skip = (page - 1) * limit
+    const { app_name, platform, is_active, sortField = 'created_at', sortOrder = 'desc' } = req.query
+
+    const where = {}
+    if (app_name) where.app_name = { contains: app_name }
+    if (platform) where.platform = platform
+    if (is_active !== undefined && is_active !== '') where.is_active = is_active === 'true' || is_active === '1'
+
+    const [total, versions] = await Promise.all([
+      prisma.appVersion.count({ where }),
+      prisma.appVersion.findMany({
+        where,
+        orderBy: { [sortField]: sortOrder.toLowerCase() },
+        take: limit,
+        skip: skip
+      })
+    ])
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: { data: versions, pagination: { page, limit, total, pages: Math.ceil(total / limit) } },
+      message: 'success'
+    })
+  } catch (error) {
+    console.error('获取应用版本列表失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取失败' })
+  }
+})
+
+// 获取应用统计信息
+router.get('/app-versions/stats', adminAuth, async (req, res) => {
+  try {
+    if (!prisma.appUsageLog) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '使用记录功能暂不可用' })
+    }
+
+    // 总使用用户数（唯一设备数）
+    const totalDevicesResult = await prisma.appUsageLog.findMany({
+      where: { event_type: 'app_open' },
+      distinct: ['device_id'],
+      select: { device_id: true }
+    })
+    const totalUsers = totalDevicesResult.length
+
+    // 各版本更新人数统计
+    const versionUpdateStats = await prisma.appUsageLog.groupBy({
+      by: ['version_code'],
+      where: { event_type: 'update_complete', version_code: { not: null } },
+      _count: { device_id: true }
+    })
+
+    // 获取版本名称映射
+    let versionNames = {}
+    if (isAppVersionAvailable()) {
+      const versions = await prisma.appVersion.findMany({
+        select: { version_code: true, version_name: true, platform: true }
+      })
+      versions.forEach(v => {
+        versionNames[v.version_code] = v.version_name
+      })
+    }
+
+    const versionUpdates = versionUpdateStats.map(stat => ({
+      version_code: stat.version_code,
+      version_name: versionNames[stat.version_code] || `v${stat.version_code}`,
+      update_count: stat._count.device_id
+    })).sort((a, b) => b.version_code - a.version_code)
+
+    // 使用时长统计
+    const durationStats = await prisma.appUsageLog.aggregate({
+      where: { event_type: 'usage_duration', duration: { not: null } },
+      _sum: { duration: true },
+      _avg: { duration: true },
+      _count: { id: true }
+    })
+
+    // 今日活跃用户数
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const todayActiveResult = await prisma.appUsageLog.findMany({
+      where: { event_type: 'app_open', created_at: { gte: today } },
+      distinct: ['device_id'],
+      select: { device_id: true }
+    })
+    const todayActiveUsers = todayActiveResult.length
+
+    // 各平台用户数（使用distinct去重设备）
+    const platforms = ['android', 'ios']
+    const platformStatsArr = []
+    for (const p of platforms) {
+      const result = await prisma.appUsageLog.findMany({
+        where: { event_type: 'app_open', platform: p },
+        distinct: ['device_id'],
+        select: { device_id: true }
+      })
+      if (result.length > 0) {
+        platformStatsArr.push({ platform: p, user_count: result.length })
+      }
+    }
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: {
+        total_users: totalUsers,
+        today_active_users: todayActiveUsers,
+        version_updates: versionUpdates,
+        usage_duration: {
+          total_seconds: durationStats._sum.duration || 0,
+          avg_seconds: Math.round(durationStats._avg.duration || 0),
+          report_count: durationStats._count.id
+        },
+        platform_stats: platformStatsArr
+      },
+      message: 'success'
+    })
+  } catch (error) {
+    console.error('获取应用统计信息失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取统计失败' })
+  }
+})
+
+// 获取单个应用版本
+router.get('/app-versions/:id', adminAuth, async (req, res) => {
+  try {
+    if (!isAppVersionAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '应用版本功能暂不可用' })
+    }
+
+    const versionId = parseInt(req.params.id)
+    const version = await prisma.appVersion.findUnique({ where: { id: versionId } })
+
+    if (!version) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '应用版本不存在' })
+    }
+
+    res.json({ code: RESPONSE_CODES.SUCCESS, data: version, message: 'success' })
+  } catch (error) {
+    console.error('获取应用版本详情失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取失败' })
+  }
+})
+
+// 创建应用版本
+router.post('/app-versions', adminAuth, async (req, res) => {
+  try {
+    if (!isAppVersionAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '应用版本功能暂不可用' })
+    }
+
+    const { app_name, version_code, version_name, platform, download_url, update_log, force_update, is_active } = req.body
+
+    if (!app_name || !app_name.trim()) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '应用名称不能为空' })
+    }
+    if (version_code === undefined || version_code === null) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '版本号不能为空' })
+    }
+    if (!version_name || !version_name.trim()) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '版本名称不能为空' })
+    }
+    if (!platform || !platform.trim()) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '平台不能为空' })
+    }
+    if (!download_url || !download_url.trim()) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '下载地址不能为空' })
+    }
+
+    const newVersion = await prisma.appVersion.create({
+      data: {
+        app_name: app_name.trim(),
+        version_code: parseInt(version_code),
+        version_name: version_name.trim(),
+        platform: platform.trim(),
+        download_url: download_url.trim(),
+        update_log: update_log ? update_log.trim() : null,
+        force_update: force_update === true || force_update === 'true',
+        is_active: is_active === undefined ? true : (is_active === true || is_active === 'true')
+      }
+    })
+
+    res.json({ code: RESPONSE_CODES.SUCCESS, data: { id: newVersion.id }, message: '创建成功' })
+  } catch (error) {
+    console.error('创建应用版本失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '创建失败' })
+  }
+})
+
+// 更新应用版本
+router.put('/app-versions/:id', adminAuth, async (req, res) => {
+  try {
+    if (!isAppVersionAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '应用版本功能暂不可用' })
+    }
+
+    const versionId = parseInt(req.params.id)
+    const { app_name, version_code, version_name, platform, download_url, update_log, force_update, is_active } = req.body
+
+    const existing = await prisma.appVersion.findUnique({ where: { id: versionId } })
+    if (!existing) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '应用版本不存在' })
+    }
+
+    const updateData = {}
+    if (app_name !== undefined) {
+      if (!app_name.trim()) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '应用名称不能为空' })
+      }
+      updateData.app_name = app_name.trim()
+    }
+    if (version_code !== undefined) updateData.version_code = parseInt(version_code)
+    if (version_name !== undefined) {
+      if (!version_name.trim()) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '版本名称不能为空' })
+      }
+      updateData.version_name = version_name.trim()
+    }
+    if (platform !== undefined) {
+      if (!platform.trim()) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '平台不能为空' })
+      }
+      updateData.platform = platform.trim()
+    }
+    if (download_url !== undefined) {
+      if (!download_url.trim()) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '下载地址不能为空' })
+      }
+      updateData.download_url = download_url.trim()
+    }
+    if (update_log !== undefined) updateData.update_log = update_log ? update_log.trim() : null
+    if (force_update !== undefined) updateData.force_update = force_update === true || force_update === 'true'
+    if (is_active !== undefined) updateData.is_active = is_active === true || is_active === 'true'
+
+    await prisma.appVersion.update({ where: { id: versionId }, data: updateData })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '更新成功' })
+  } catch (error) {
+    console.error('更新应用版本失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '更新失败' })
+  }
+})
+
+// 删除应用版本
+router.delete('/app-versions/:id', adminAuth, async (req, res) => {
+  try {
+    if (!isAppVersionAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '应用版本功能暂不可用' })
+    }
+
+    const versionId = parseInt(req.params.id)
+
+    const existing = await prisma.appVersion.findUnique({ where: { id: versionId } })
+    if (!existing) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '应用版本不存在' })
+    }
+
+    await prisma.appVersion.delete({ where: { id: versionId } })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '删除成功' })
+  } catch (error) {
+    console.error('删除应用版本失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '删除失败' })
+  }
+})
+
+// 批量删除应用版本
+router.delete('/app-versions', adminAuth, async (req, res) => {
+  try {
+    if (!isAppVersionAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '应用版本功能暂不可用' })
+    }
+
+    const { ids } = req.body
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '请提供要删除的ID列表' })
+    }
+
+    await prisma.appVersion.deleteMany({ where: { id: { in: ids.map(id => parseInt(id)) } } })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '成功删除 ' + ids.length + ' 条记录' })
+  } catch (error) {
+    console.error('批量删除应用版本失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '删除失败' })
+  }
+})
+
 module.exports = router
 module.exports.isAiAutoReviewEnabled = isAiAutoReviewEnabled
 module.exports.isAiUsernameReviewEnabled = isAiUsernameReviewEnabled

@@ -42,6 +42,7 @@ import SystemSettingsManagement from '@/views/admin/SystemSettingsManagement.vue
 import NotificationManagement from '@/views/admin/NotificationManagement.vue'
 import NotificationTemplateManagement from '@/views/admin/NotificationTemplateManagement.vue'
 import AuditManagement from '@/views/admin/AuditManagement.vue'
+import AppVersionManagement from '@/views/admin/AppVersionManagement.vue'
 
 // 登录鉴权守卫：未登录用户重定向到首页
 const requireAuth = (to, from, next) => {
@@ -344,6 +345,11 @@ const router = createRouter({
           path: 'audit',
           name: 'admin_audit',
           component: AuditManagement
+        },
+        {
+          path: 'app-versions',
+          name: 'admin_app_versions',
+          component: AppVersionManagement
         }
       ]
     }

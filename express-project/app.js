@@ -322,6 +322,171 @@ app.use('/api/balance', balanceRoutes);
 app.use('/api/creator-center', creatorCenterRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
+// 语义化版本比较：比较两个版本名称字符串（如 "1.0.0" vs "2.1.0"）
+// 返回值: 1 表示 a > b, -1 表示 a < b, 0 表示相等
+function compareVersionNames(a, b) {
+  // 移除非数字和点号的字符（如 -beta, -rc1 等预发布标识）
+  const cleanA = String(a).replace(/[^0-9.]/g, '');
+  const cleanB = String(b).replace(/[^0-9.]/g, '');
+  const partsA = cleanA.split('.').map(Number);
+  const partsB = cleanB.split('.').map(Number);
+  const maxLen = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < maxLen; i++) {
+    const numA = partsA[i] || 0;
+    const numB = partsB[i] || 0;
+    if (numA > numB) return 1;
+    if (numA < numB) return -1;
+  }
+  return 0;
+}
+
+// 公开API：检查App版本更新（无需认证）
+app.get('/api/app/check-update', async (req, res) => {
+  try {
+    const { platform, version_name, version_code } = req.query;
+    // 优先使用 version_name 进行比较，兼容旧版传 version_code
+    const currentVersionName = version_name || null;
+
+    if (!platform || (!currentVersionName && !version_code)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数: platform, version_name'
+      });
+    }
+
+    // 检查AppVersion模型是否可用
+    if (!prisma.appVersion) {
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '应用版本功能暂不可用'
+      });
+    }
+
+    // 查找该平台所有启用版本
+    const activeVersions = await prisma.appVersion.findMany({
+      where: {
+        platform: platform,
+        is_active: true
+      }
+    });
+
+    if (!activeVersions || activeVersions.length === 0) {
+      return res.json({
+        code: RESPONSE_CODES.SUCCESS,
+        data: { has_update: false },
+        message: '已是最新版本'
+      });
+    }
+
+    // 按 version_name 语义化排序，取最新版本
+    activeVersions.sort((a, b) => compareVersionNames(b.version_name, a.version_name));
+    const latestVersion = activeVersions[0];
+
+    // 使用 version_name 进行比较；若客户端未传 version_name 则回退到 version_code
+    let hasUpdate = false;
+    if (currentVersionName) {
+      hasUpdate = compareVersionNames(latestVersion.version_name, currentVersionName) > 0;
+    } else {
+      const currentCode = parseInt(version_code);
+      if (isNaN(currentCode)) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({
+          code: RESPONSE_CODES.VALIDATION_ERROR,
+          message: 'version_code 必须为数字'
+        });
+      }
+      hasUpdate = latestVersion.version_code > currentCode;
+    }
+
+    if (!hasUpdate) {
+      return res.json({
+        code: RESPONSE_CODES.SUCCESS,
+        data: { has_update: false },
+        message: '已是最新版本'
+      });
+    }
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: {
+        has_update: true,
+        version_code: latestVersion.version_code,
+        version_name: latestVersion.version_name,
+        download_url: latestVersion.download_url,
+        update_log: latestVersion.update_log,
+        force_update: latestVersion.force_update
+      },
+      message: '发现新版本'
+    });
+  } catch (error) {
+    console.error('检查App更新失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: '检查更新失败'
+    });
+  }
+});
+
+// 公开API：上报App使用事件（无需认证）
+app.post('/api/app/report-event', async (req, res) => {
+  try {
+    const { device_id, event_type, version_code, platform, duration } = req.body;
+
+    if (!device_id || !event_type || !platform) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数: device_id, event_type, platform'
+      });
+    }
+
+    const validEvents = ['app_open', 'update_check', 'update_complete', 'usage_duration'];
+    if (!validEvents.includes(event_type)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '无效的事件类型，支持: ' + validEvents.join(', ')
+      });
+    }
+
+    if (!prisma.appUsageLog) {
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '使用记录功能暂不可用'
+      });
+    }
+
+    // 查找关联的版本记录
+    let versionId = null;
+    if (version_code && prisma.appVersion) {
+      const version = await prisma.appVersion.findFirst({
+        where: { version_code: parseInt(version_code), platform },
+        select: { id: true }
+      });
+      if (version) versionId = version.id;
+    }
+
+    await prisma.appUsageLog.create({
+      data: {
+        device_id: String(device_id).substring(0, 100),
+        event_type,
+        version_code: version_code ? parseInt(version_code) : null,
+        version_id: versionId,
+        platform: String(platform).substring(0, 20),
+        duration: event_type === 'usage_duration' && duration ? parseInt(duration) : null
+      }
+    });
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      message: '上报成功'
+    });
+  } catch (error) {
+    console.error('上报App事件失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: '上报失败'
+    });
+  }
+});
+
 // 错误处理中间件
 app.use((err, req, res, next) => {
   console.error('服务器错误:', err);
