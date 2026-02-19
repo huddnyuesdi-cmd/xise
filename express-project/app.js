@@ -342,6 +342,14 @@ app.get('/api/app/check-update', async (req, res) => {
       });
     }
 
+    // 检查AppVersion模型是否可用
+    if (!prisma.appVersion) {
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '应用版本功能暂不可用'
+      });
+    }
+
     // 查找该平台最新的启用版本
     const latestVersion = await prisma.appVersion.findFirst({
       where: {

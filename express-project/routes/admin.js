@@ -5057,7 +5057,7 @@ router.post('/app-versions', adminAuth, async (req, res) => {
         download_url: download_url.trim(),
         update_log: update_log ? update_log.trim() : null,
         force_update: force_update === true || force_update === 'true',
-        is_active: is_active === undefined ? true : Boolean(is_active)
+        is_active: is_active === undefined ? true : (is_active === true || is_active === 'true')
       }
     })
 
