@@ -5059,12 +5059,19 @@ router.get('/app-versions/stats', adminAuth, async (req, res) => {
     })
     const todayActiveUsers = todayActiveResult.length
 
-    // 各平台用户数
-    const platformStats = await prisma.appUsageLog.groupBy({
-      by: ['platform'],
-      where: { event_type: 'app_open' },
-      _count: { device_id: true }
-    })
+    // 各平台用户数（使用distinct去重设备）
+    const platforms = ['android', 'ios']
+    const platformStatsArr = []
+    for (const p of platforms) {
+      const result = await prisma.appUsageLog.findMany({
+        where: { event_type: 'app_open', platform: p },
+        distinct: ['device_id'],
+        select: { device_id: true }
+      })
+      if (result.length > 0) {
+        platformStatsArr.push({ platform: p, user_count: result.length })
+      }
+    }
 
     res.json({
       code: RESPONSE_CODES.SUCCESS,
@@ -5077,10 +5084,7 @@ router.get('/app-versions/stats', adminAuth, async (req, res) => {
           avg_seconds: Math.round(durationStats._avg.duration || 0),
           report_count: durationStats._count.id
         },
-        platform_stats: platformStats.map(s => ({
-          platform: s.platform,
-          user_count: s._count.device_id
-        }))
+        platform_stats: platformStatsArr
       },
       message: 'success'
     })
