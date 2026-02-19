@@ -779,7 +779,7 @@ function parseAppInlineRoutes(appJsPath) {
           if (cleanParam.includes('=')) {
             const parts = cleanParam.split('=');
             cleanParam = parts[0].trim();
-            defaultValue = parts[1].trim();
+            defaultValue = parts.slice(1).join('=').trim();
           }
           if (cleanParam.includes(':')) {
             cleanParam = cleanParam.split(':')[0].trim();
