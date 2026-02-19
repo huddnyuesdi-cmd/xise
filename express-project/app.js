@@ -322,6 +322,68 @@ app.use('/api/balance', balanceRoutes);
 app.use('/api/creator-center', creatorCenterRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
+// 公开API：检查App版本更新（无需认证）
+app.get('/api/app/check-update', async (req, res) => {
+  try {
+    const { platform, version_code } = req.query;
+
+    if (!platform || !version_code) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数: platform, version_code'
+      });
+    }
+
+    const currentVersionCode = parseInt(version_code);
+    if (isNaN(currentVersionCode)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: 'version_code 必须为数字'
+      });
+    }
+
+    // 查找该平台最新的启用版本
+    const latestVersion = await prisma.appVersion.findFirst({
+      where: {
+        platform: platform,
+        is_active: true
+      },
+      orderBy: {
+        version_code: 'desc'
+      }
+    });
+
+    if (!latestVersion || latestVersion.version_code <= currentVersionCode) {
+      return res.json({
+        code: RESPONSE_CODES.SUCCESS,
+        data: {
+          has_update: false
+        },
+        message: '已是最新版本'
+      });
+    }
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: {
+        has_update: true,
+        version_code: latestVersion.version_code,
+        version_name: latestVersion.version_name,
+        download_url: latestVersion.download_url,
+        update_log: latestVersion.update_log,
+        force_update: latestVersion.force_update
+      },
+      message: '发现新版本'
+    });
+  } catch (error) {
+    console.error('检查App更新失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: '检查更新失败'
+    });
+  }
+});
+
 // 错误处理中间件
 app.use((err, req, res, next) => {
   console.error('服务器错误:', err);

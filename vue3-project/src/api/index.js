@@ -895,6 +895,37 @@ export const adminApi = {
   // 获取单个系统通知详情
   getSystemNotificationDetail(notificationId) {
     return request.get(`/admin/system-notifications/${notificationId}`)
+  },
+
+  // ========== 应用版本管理 ==========
+  // 获取应用版本列表
+  getAppVersions(params = {}) {
+    return request.get('/admin/app-versions', { params })
+  },
+
+  // 创建应用版本
+  createAppVersion(data) {
+    return request.post('/admin/app-versions', data)
+  },
+
+  // 更新应用版本
+  updateAppVersion(versionId, data) {
+    return request.put(`/admin/app-versions/${versionId}`, data)
+  },
+
+  // 删除应用版本
+  deleteAppVersion(versionId) {
+    return request.delete(`/admin/app-versions/${versionId}`)
+  },
+
+  // 批量删除应用版本
+  batchDeleteAppVersions(ids) {
+    return request.delete('/admin/app-versions', { data: { ids } })
+  },
+
+  // 获取单个应用版本详情
+  getAppVersionDetail(versionId) {
+    return request.get(`/admin/app-versions/${versionId}`)
   }
 }
 

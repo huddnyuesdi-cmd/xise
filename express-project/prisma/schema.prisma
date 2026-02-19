@@ -735,3 +735,23 @@ model UserToolbar {
   @@index([sort_order], name: "idx_user_toolbar_sort_order")
   @@map("user_toolbar")
 }
+
+// 应用版本管理表
+model AppVersion {
+  id              Int      @id @default(autoincrement())
+  app_name        String   @db.VarChar(100) // 应用名称
+  version_code    Int // 版本号（数字，用于比较）
+  version_name    String   @db.VarChar(50) // 版本名称（如 1.0.0）
+  platform        String   @db.VarChar(20) // 平台: android, ios
+  download_url    String   @db.VarChar(500) // 下载地址
+  update_log      String?  @db.Text // 更新日志
+  force_update    Boolean  @default(false) // 是否强制更新
+  is_active       Boolean  @default(true) // 是否启用
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([platform], name: "idx_app_version_platform")
+  @@index([is_active], name: "idx_app_version_is_active")
+  @@index([version_code], name: "idx_app_version_version_code")
+  @@map("app_versions")
+}
