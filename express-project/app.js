@@ -322,23 +322,32 @@ app.use('/api/balance', balanceRoutes);
 app.use('/api/creator-center', creatorCenterRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
+// 语义化版本比较：比较两个版本名称字符串（如 "1.0.0" vs "2.1.0"）
+// 返回值: 1 表示 a > b, -1 表示 a < b, 0 表示相等
+function compareVersionNames(a, b) {
+  const partsA = String(a).split('.').map(Number);
+  const partsB = String(b).split('.').map(Number);
+  const maxLen = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < maxLen; i++) {
+    const numA = partsA[i] || 0;
+    const numB = partsB[i] || 0;
+    if (numA > numB) return 1;
+    if (numA < numB) return -1;
+  }
+  return 0;
+}
+
 // 公开API：检查App版本更新（无需认证）
 app.get('/api/app/check-update', async (req, res) => {
   try {
-    const { platform, version_code } = req.query;
+    const { platform, version_name, version_code } = req.query;
+    // 优先使用 version_name 进行比较，兼容旧版传 version_code
+    const currentVersionName = version_name || null;
 
-    if (!platform || !version_code) {
+    if (!platform || (!currentVersionName && !version_code)) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({
         code: RESPONSE_CODES.VALIDATION_ERROR,
-        message: '缺少必要参数: platform, version_code'
-      });
-    }
-
-    const currentVersionCode = parseInt(version_code);
-    if (isNaN(currentVersionCode)) {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({
-        code: RESPONSE_CODES.VALIDATION_ERROR,
-        message: 'version_code 必须为数字'
+        message: '缺少必要参数: platform, version_name'
       });
     }
 
@@ -350,23 +359,39 @@ app.get('/api/app/check-update', async (req, res) => {
       });
     }
 
-    // 查找该平台最新的启用版本
-    const latestVersion = await prisma.appVersion.findFirst({
+    // 查找该平台所有启用版本
+    const activeVersions = await prisma.appVersion.findMany({
       where: {
         platform: platform,
         is_active: true
-      },
-      orderBy: {
-        version_code: 'desc'
       }
     });
 
-    if (!latestVersion || latestVersion.version_code <= currentVersionCode) {
+    if (!activeVersions || activeVersions.length === 0) {
       return res.json({
         code: RESPONSE_CODES.SUCCESS,
-        data: {
-          has_update: false
-        },
+        data: { has_update: false },
+        message: '已是最新版本'
+      });
+    }
+
+    // 按 version_name 语义化排序，取最新版本
+    activeVersions.sort((a, b) => compareVersionNames(b.version_name, a.version_name));
+    const latestVersion = activeVersions[0];
+
+    // 使用 version_name 进行比较；若客户端未传 version_name 则回退到 version_code
+    let hasUpdate = false;
+    if (currentVersionName) {
+      hasUpdate = compareVersionNames(latestVersion.version_name, currentVersionName) > 0;
+    } else {
+      const currentCode = parseInt(version_code);
+      hasUpdate = !isNaN(currentCode) && latestVersion.version_code > currentCode;
+    }
+
+    if (!hasUpdate) {
+      return res.json({
+        code: RESPONSE_CODES.SUCCESS,
+        data: { has_update: false },
         message: '已是最新版本'
       });
     }
