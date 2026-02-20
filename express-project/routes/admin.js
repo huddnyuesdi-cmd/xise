@@ -5194,7 +5194,7 @@ router.post('/app-versions', adminAuth, async (req, res) => {
     try {
       await redis.set('app_version:last_form_data', {
         version_name: version_name.trim(),
-        version_code: parseInt(version_code)
+        version_code: parseInt(version_code, 10)
       })
     } catch (redisErr) {
       console.error('保存版本缓存到Redis失败:', redisErr)

@@ -811,7 +811,7 @@ router.post('/apk', authenticateToken, apkUpload.single('file'), async (req, res
       fs.mkdirSync(uploadDir, { recursive: true });
     }
 
-    // 生成唯一文件名
+    // 生成唯一文件名（MD5仅用于文件名去重，非安全用途）
     const ext = path.extname(req.file.originalname);
     const hash = crypto.createHash('md5').update(req.file.buffer).digest('hex');
     const uniqueFilename = `${Date.now()}_${hash}${ext}`;
