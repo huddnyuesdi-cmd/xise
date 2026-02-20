@@ -54,7 +54,8 @@
       api-endpoint="/admin/app-versions" 
       :columns="columns"
       :form-fields="formFields" 
-      :search-fields="searchFields" 
+      :search-fields="searchFields"
+      :default-form-data="defaultFormData"
     />
   </div>
 </template>
@@ -71,6 +72,8 @@ const stats = ref({
   usage_duration: { total_seconds: 0, avg_seconds: 0, report_count: 0 },
   platform_stats: []
 })
+
+const defaultFormData = ref({})
 
 const maxUpdateCount = computed(() => {
   if (stats.value.version_updates.length === 0) return 1
@@ -103,8 +106,26 @@ const fetchStats = async () => {
   }
 }
 
+const fetchLastFormData = async () => {
+  try {
+    const response = await adminApi.getAppVersionLastFormData()
+    if (response && response.success && response.data) {
+      const data = response.data
+      if (data.version_name || data.version_code) {
+        defaultFormData.value = {
+          version_name: data.version_name || '',
+          version_code: data.version_code || ''
+        }
+      }
+    }
+  } catch (err) {
+    console.error('获取上次版本数据失败:', err)
+  }
+}
+
 onMounted(() => {
   fetchStats()
+  fetchLastFormData()
 })
 
 const columns = [
@@ -133,7 +154,7 @@ const formFields = [
       { value: 'ios', label: 'iOS' }
     ]
   },
-  { key: 'download_url', label: '下载地址', type: 'text', required: true, placeholder: '请输入下载地址' },
+  { key: 'download_url', label: '下载地址', type: 'file-upload', required: true, placeholder: '点击或拖拽上传 APK/APKS 文件', accept: '.apk,.apks', hint: '支持 APK、APKS 格式，文件大小不超过 200MB', uploadEndpoint: '/api/upload/apk' },
   { key: 'update_log', label: '更新日志', type: 'textarea', required: false, placeholder: '请输入更新日志' },
   {
     key: 'force_update',

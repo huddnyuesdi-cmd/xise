@@ -338,6 +338,10 @@ const props = defineProps({
   extraParams: {
     type: Object,
     default: () => ({})
+  },
+  defaultFormData: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -477,7 +481,7 @@ props.searchFields.forEach(field => {
 // 重置表单数据的方法
 const resetFormData = () => {
   // 直接创建一个全新的对象来替换
-  const newFormData = {}
+  const newFormData = { ...props.defaultFormData }
 
   // 为笔记类型初始化必要的字段
   if (props.apiEndpoint === '/admin/posts') {

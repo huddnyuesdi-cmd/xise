@@ -777,6 +777,70 @@ router.post('/attachment', authenticateToken, attachmentUpload.single('file'), a
   }
 });
 
+// 文件过滤器 - APK/APKS
+const apkFileFilter = (req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (ext === '.apk' || ext === '.apks') {
+    cb(null, true);
+  } else {
+    cb(new Error('只允许上传 APK 或 APKS 文件'), false);
+  }
+};
+
+// 配置 multer - APK
+const apkUpload = multer({
+  storage: storage,
+  fileFilter: apkFileFilter,
+  limits: {
+    fileSize: 200 * 1024 * 1024 // 200MB 限制
+  }
+});
+
+// APK/APKS 上传
+router.post('/apk', authenticateToken, apkUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '没有上传文件' });
+    }
+
+    // 保存到本地
+    const uploadDir = path.join(process.cwd(), 'uploads/apk');
+
+    // 确保上传目录存在
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // 生成唯一文件名
+    const ext = path.extname(req.file.originalname);
+    const hash = crypto.createHash('md5').update(req.file.buffer).digest('hex');
+    const uniqueFilename = `${Date.now()}_${hash}${ext}`;
+    const filePath = path.join(uploadDir, uniqueFilename);
+
+    // 保存文件
+    fs.writeFileSync(filePath, req.file.buffer);
+
+    // 返回访问URL
+    const baseUrl = config.upload.attachment?.local?.baseUrl || 'http://localhost:3001';
+    const url = `${baseUrl}/uploads/apk/${uniqueFilename}`;
+
+    console.log(`APK上传成功 - 用户ID: ${req.user.id}, 文件名: ${req.file.originalname}`);
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      message: '上传成功',
+      data: {
+        originalname: req.file.originalname,
+        size: req.file.size,
+        url: url
+      }
+    });
+  } catch (error) {
+    console.error('APK上传失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '上传失败' });
+  }
+});
+
 // 错误处理中间件
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
@@ -788,7 +852,7 @@ router.use((error, req, res, next) => {
     }
   }
 
-  if (error.message === '只允许上传图片文件' || error.message === '只允许上传视频文件' || error.message === '不支持的附件类型') {
+  if (error.message === '只允许上传图片文件' || error.message === '只允许上传视频文件' || error.message === '不支持的附件类型' || error.message === '只允许上传 APK 或 APKS 文件') {
     return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: error.message });
   }
 
