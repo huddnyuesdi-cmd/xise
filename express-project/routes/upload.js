@@ -723,7 +723,7 @@ router.post('/chunk/merge/apk', authenticateToken, async (req, res) => {
     const uniqueFilename = `${Date.now()}_${hash}${ext}`;
     const outputPath = path.join(uploadDir, uniqueFilename);
     
-    // 创建写入流，按顺序合并分片
+    // 创建写入流，按顺序合并分片（使用流式读取减少内存压力）
     const writeStream = fs.createWriteStream(outputPath);
     
     for (let i = 1; i <= parseInt(totalChunks); i++) {
@@ -733,8 +733,12 @@ router.post('/chunk/merge/apk', authenticateToken, async (req, res) => {
         identifier, 
         `chunk_${i}`
       );
-      const chunkBuffer = fs.readFileSync(chunkPath);
-      writeStream.write(chunkBuffer);
+      await new Promise((resolve, reject) => {
+        const readStream = fs.createReadStream(chunkPath);
+        readStream.on('error', reject);
+        readStream.on('end', resolve);
+        readStream.pipe(writeStream, { end: false });
+      });
     }
     
     await new Promise((resolve, reject) => {
@@ -936,7 +940,7 @@ router.post('/apk', authenticateToken, apkUpload.single('file'), async (req, res
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '文件大小超过限制（200MB）' });
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '文件大小超过限制' });
     }
     if (error.code === 'LIMIT_FILE_COUNT') {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '文件数量超过限制（9个）' });
