@@ -1364,49 +1364,75 @@ const uploadFileToServer = async (file, field) => {
   fileUploadProgress.value[fieldKey] = 0
 
   try {
-    const formDataObj = new FormData()
-    formDataObj.append('file', file)
-
     const token = localStorage.getItem('token') || localStorage.getItem('admin_token')
     if (!token) {
       throw new Error('未登录，请先登录')
     }
 
-    const uploadEndpoint = field.uploadEndpoint || '/api/upload/apk'
+    const chunkSize = 3 * 1024 * 1024 // 3MB per chunk
+    const totalChunks = Math.ceil(file.size / chunkSize)
+    const randomPart = Math.random().toString(36).substring(2, 10)
+    const timePart = Date.now().toString(36)
+    const identifier = `apk_${randomPart}${timePart}_${file.size}`
 
-    const result = await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
+    let uploadedChunks = 0
 
-      xhr.upload.addEventListener('progress', (event) => {
-        if (event.lengthComputable) {
-          fileUploadProgress.value[fieldKey] = Math.round((event.loaded / event.total) * 100)
-        }
+    // 逐个上传分片
+    for (let i = 1; i <= totalChunks; i++) {
+      const start = (i - 1) * chunkSize
+      const end = Math.min(start + chunkSize, file.size)
+      const chunk = file.slice(start, end)
+
+      // 上传分片
+      const formDataObj = new FormData()
+      formDataObj.append('file', chunk, `chunk_${i}`)
+      formDataObj.append('identifier', identifier)
+      formDataObj.append('chunkNumber', i.toString())
+      formDataObj.append('totalChunks', totalChunks.toString())
+      formDataObj.append('filename', file.name)
+
+      const uploadResponse = await fetch('/api/upload/chunk', {
+        method: 'POST',
+        body: formDataObj,
+        headers: { 'Authorization': `Bearer ${token}` }
       })
 
-      xhr.addEventListener('load', () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            resolve(JSON.parse(xhr.responseText))
-          } catch (e) {
-            reject(new Error('解析响应失败'))
-          }
-        } else {
-          reject(new Error(`上传失败: HTTP ${xhr.status}`))
-        }
-      })
+      if (!uploadResponse.ok) {
+        throw new Error(`分片 ${i} 上传失败: HTTP ${uploadResponse.status}`)
+      }
 
-      xhr.addEventListener('error', () => reject(new Error('网络错误')))
-      xhr.open('POST', uploadEndpoint)
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-      xhr.send(formDataObj)
+      const uploadResult = await uploadResponse.json()
+      if (uploadResult.code !== 200) {
+        throw new Error(`分片 ${i} 上传失败: ${uploadResult.message}`)
+      }
+
+      uploadedChunks++
+      fileUploadProgress.value[fieldKey] = Math.round((uploadedChunks / totalChunks) * 90)
+    }
+
+    // 合并分片
+    const mergeEndpoint = field.mergeEndpoint || '/api/upload/chunk/merge/apk'
+    const mergeResponse = await fetch(mergeEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({ identifier, totalChunks, filename: file.name }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
     })
 
-    if (result.code === 200) {
-      fileUploadNames.value[fieldKey] = file.name
-      updateField(fieldKey, result.data.url)
-    } else {
-      throw new Error(result.message || '上传失败')
+    if (!mergeResponse.ok) {
+      throw new Error(`合并失败: HTTP ${mergeResponse.status}`)
     }
+
+    const mergeResult = await mergeResponse.json()
+    if (mergeResult.code !== 200) {
+      throw new Error(mergeResult.message || '合并失败')
+    }
+
+    fileUploadProgress.value[fieldKey] = 100
+    fileUploadNames.value[fieldKey] = file.name
+    updateField(fieldKey, mergeResult.data.url)
   } catch (err) {
     console.error('文件上传失败:', err)
     fileUploadErrors.value[fieldKey] = err.message || '上传失败，请重试'

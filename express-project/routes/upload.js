@@ -681,6 +681,97 @@ router.post('/chunk/merge/image', authenticateToken, async (req, res) => {
   }
 });
 
+// 合并APK分片
+router.post('/chunk/merge/apk', authenticateToken, async (req, res) => {
+  try {
+    const { identifier, totalChunks, filename } = req.body;
+    
+    if (!identifier || !totalChunks || !filename) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数'
+      });
+    }
+
+    // 验证文件扩展名
+    const ext = path.extname(filename).toLowerCase();
+    if (ext !== '.apk' && ext !== '.apks') {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '只允许上传 APK 或 APKS 文件'
+      });
+    }
+    
+    console.log(`🔄 开始合并APK分片 - 用户ID: ${req.user.id}, 文件名: ${filename}, 总分片数: ${totalChunks}`);
+    
+    // 确保所有分片都存在
+    const { complete, missingChunks } = await checkUploadComplete(identifier, parseInt(totalChunks));
+    if (!complete) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: `分片不完整，缺少: ${missingChunks.join(', ')}`
+      });
+    }
+    
+    // 生成输出文件路径
+    const uploadDir = path.join(process.cwd(), 'uploads/apk');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    const hash = crypto.createHash('md5').update(identifier + Date.now()).digest('hex');
+    const uniqueFilename = `${Date.now()}_${hash}${ext}`;
+    const outputPath = path.join(uploadDir, uniqueFilename);
+    
+    // 创建写入流，按顺序合并分片
+    const writeStream = fs.createWriteStream(outputPath);
+    
+    for (let i = 1; i <= parseInt(totalChunks); i++) {
+      const chunkPath = path.join(
+        process.cwd(), 
+        config.upload.video.chunk.tempDir, 
+        identifier, 
+        `chunk_${i}`
+      );
+      const chunkBuffer = fs.readFileSync(chunkPath);
+      writeStream.write(chunkBuffer);
+    }
+    
+    await new Promise((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      writeStream.end();
+    });
+    
+    // 清理分片目录
+    const chunkDir = path.join(process.cwd(), config.upload.video.chunk.tempDir, identifier);
+    if (fs.existsSync(chunkDir)) {
+      fs.rmSync(chunkDir, { recursive: true, force: true });
+    }
+    
+    // 返回访问URL
+    const baseUrl = config.upload.attachment?.local?.baseUrl || 'http://localhost:3001';
+    const url = `${baseUrl}/uploads/apk/${uniqueFilename}`;
+    
+    console.log(`✅ APK分片合并完成 - 用户ID: ${req.user.id}, 文件名: ${filename}, URL: ${url}`);
+    
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      message: 'APK上传成功',
+      data: {
+        originalname: filename,
+        url: url
+      }
+    });
+  } catch (error) {
+    console.error('APK分片合并失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: 'APK分片合并失败'
+    });
+  }
+});
+
 // 文件过滤器 - 附件
 const attachmentFileFilter = (req, file, cb) => {
   // 检查文件类型

@@ -154,7 +154,7 @@ const formFields = [
       { value: 'ios', label: 'iOS' }
     ]
   },
-  { key: 'download_url', label: '下载地址', type: 'file-upload', required: true, placeholder: '点击或拖拽上传 APK/APKS 文件', accept: '.apk,.apks', hint: '支持 APK、APKS 格式，文件大小不超过 200MB', uploadEndpoint: '/api/upload/apk' },
+  { key: 'download_url', label: '下载地址', type: 'file-upload', required: true, placeholder: '点击或拖拽上传 APK/APKS 文件', accept: '.apk,.apks', hint: '支持 APK、APKS 格式，文件大小不超过 200MB，使用分片上传', mergeEndpoint: '/api/upload/chunk/merge/apk' },
   { key: 'update_log', label: '更新日志', type: 'textarea', required: false, placeholder: '请输入更新日志' },
   {
     key: 'force_update',
