@@ -931,6 +931,16 @@ export const adminApi = {
   // 获取应用统计信息
   getAppVersionStats() {
     return request.get('/admin/app-versions/stats')
+  },
+
+  // 获取上次填写的版本数据（从Redis）
+  getAppVersionLastFormData() {
+    return request.get('/admin/app-versions/last-form-data')
+  },
+
+  // 保存版本数据到Redis
+  saveAppVersionLastFormData(data) {
+    return request.post('/admin/app-versions/last-form-data', data)
   }
 }
 

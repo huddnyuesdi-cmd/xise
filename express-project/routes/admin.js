@@ -12,6 +12,7 @@ const { notifySystemNotification, DEFAULT_TEMPLATES, loadCustomTemplates, update
 const { sendMail } = require('../utils/email')
 const { email: emailConfig, notificationChannels: notifChannelsConfig } = require('../config/config')
 const sessionService = require('../utils/sessionService')
+const redis = require('../utils/redis')
 
 // ===================== AI审核设置 =====================
 // 使用 Redis 持久化的设置服务
@@ -5094,6 +5095,40 @@ router.get('/app-versions/stats', adminAuth, async (req, res) => {
   }
 })
 
+// 获取上次填写的版本名称和版本号（从Redis读取）
+router.get('/app-versions/last-form-data', adminAuth, async (req, res) => {
+  try {
+    const data = await redis.get('app_version:last_form_data')
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: data || { version_name: '', version_code: '' },
+      message: 'success'
+    })
+  } catch (error) {
+    console.error('获取上次版本数据失败:', error)
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: { version_name: '', version_code: '' },
+      message: 'success'
+    })
+  }
+})
+
+// 保存版本名称和版本号到Redis
+router.post('/app-versions/last-form-data', adminAuth, async (req, res) => {
+  try {
+    const { version_name, version_code } = req.body
+    await redis.set('app_version:last_form_data', {
+      version_name: version_name || '',
+      version_code: version_code || ''
+    })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '保存成功' })
+  } catch (error) {
+    console.error('保存版本数据失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '保存失败' })
+  }
+})
+
 // 获取单个应用版本
 router.get('/app-versions/:id', adminAuth, async (req, res) => {
   try {
@@ -5154,6 +5189,16 @@ router.post('/app-versions', adminAuth, async (req, res) => {
     })
 
     res.json({ code: RESPONSE_CODES.SUCCESS, data: { id: newVersion.id }, message: '创建成功' })
+
+    // 保存最后使用的版本名称和版本号到 Redis
+    try {
+      await redis.set('app_version:last_form_data', {
+        version_name: version_name.trim(),
+        version_code: parseInt(version_code, 10)
+      })
+    } catch (redisErr) {
+      console.error('保存版本缓存到Redis失败:', redisErr)
+    }
   } catch (error) {
     console.error('创建应用版本失败:', error)
     res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '创建失败' })

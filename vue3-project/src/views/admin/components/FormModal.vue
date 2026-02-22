@@ -140,6 +140,36 @@
             </div>
             <IconPicker v-else-if="field.type === 'icon-picker'" :model-value="formData[field.key] || ''"
               @update:model-value="updateField(field.key, $event)" :placeholder="field.placeholder" />
+            <div v-else-if="field.type === 'file-upload'" class="file-upload-field">
+              <div class="file-upload-area" @click="triggerFileUploadInput(field.key)"
+                @dragover.prevent="fileUploadDragOver[field.key] = true"
+                @dragleave.prevent="fileUploadDragOver[field.key] = false"
+                @drop.prevent="handleFileUploadDrop($event, field)"
+                :class="{ 'drag-over': fileUploadDragOver[field.key], 'uploading': fileUploading[field.key], 'has-file': formData[field.key] }">
+                <input :ref="el => setFileUploadInputRef(field.key, el)" type="file"
+                  :accept="field.accept || '*'" @change="handleFileUploadSelect($event, field)" style="display: none" />
+                <div v-if="fileUploading[field.key]" class="file-upload-loading">
+                  <div class="file-upload-progress-bar">
+                    <div class="file-upload-progress-fill" :style="{ width: (fileUploadProgress[field.key] || 0) + '%' }"></div>
+                  </div>
+                  <p class="file-upload-progress-text">上传中 {{ Math.floor(fileUploadProgress[field.key] || 0) }}%</p>
+                </div>
+                <div v-else-if="formData[field.key]" class="file-upload-success">
+                  <div class="file-upload-icon">📦</div>
+                  <div class="file-upload-info">
+                    <div class="file-upload-name">{{ fileUploadNames[field.key] || '已上传文件' }}</div>
+                    <div class="file-upload-url">{{ formData[field.key] }}</div>
+                  </div>
+                  <button type="button" class="file-upload-remove" @click.stop="removeFileUpload(field.key)">×</button>
+                </div>
+                <div v-else class="file-upload-placeholder">
+                  <div class="file-upload-icon">📁</div>
+                  <p>{{ field.placeholder || '点击或拖拽上传文件' }}</p>
+                  <p class="file-upload-hint" v-if="field.hint">{{ field.hint }}</p>
+                </div>
+              </div>
+              <div v-if="fileUploadErrors[field.key]" class="file-upload-error">{{ fileUploadErrors[field.key] }}</div>
+            </div>
 
           </div>
         </form>
@@ -249,6 +279,14 @@ const currentAvatarField = ref('')
 const videoFileInputRefs = ref({})
 const videoUploading = ref({})
 const videoErrors = ref({})
+
+// 文件上传相关
+const fileUploadInputRefs = ref({})
+const fileUploading = ref({})
+const fileUploadProgress = ref({})
+const fileUploadErrors = ref({})
+const fileUploadDragOver = ref({})
+const fileUploadNames = ref({})
 
 // 从服务器获取的视频大小限制配置
 const serverMaxVideoSize = ref(null)
@@ -1287,6 +1325,131 @@ const handleAvatarCropConfirm = async (blob) => {
   }
 }
 
+// ===================== 文件上传相关方法 =====================
+const setFileUploadInputRef = (fieldKey, el) => {
+  if (el) fileUploadInputRefs.value[fieldKey] = el
+}
+
+const triggerFileUploadInput = (fieldKey) => {
+  fileUploadInputRefs.value[fieldKey]?.click()
+}
+
+const handleFileUploadSelect = (event, field) => {
+  const files = event.target.files
+  if (files && files.length > 0) {
+    uploadFileToServer(files[0], field)
+  }
+}
+
+const handleFileUploadDrop = (event, field) => {
+  fileUploadDragOver.value[field.key] = false
+  const files = event.dataTransfer.files
+  if (files && files.length > 0) {
+    uploadFileToServer(files[0], field)
+  }
+}
+
+const uploadFileToServer = async (file, field) => {
+  const fieldKey = field.key
+  fileUploadErrors.value[fieldKey] = ''
+
+  // 验证文件大小（默认200MB）
+  const maxSize = field.maxSize || 200 * 1024 * 1024
+  if (file.size > maxSize) {
+    fileUploadErrors.value[fieldKey] = `文件大小不能超过 ${Math.round(maxSize / (1024 * 1024))}MB`
+    return
+  }
+
+  fileUploading.value[fieldKey] = true
+  fileUploadProgress.value[fieldKey] = 0
+
+  try {
+    const token = localStorage.getItem('token') || localStorage.getItem('admin_token')
+    if (!token) {
+      throw new Error('未登录，请先登录')
+    }
+
+    const chunkSize = 3 * 1024 * 1024 // 3MB per chunk
+    const totalChunks = Math.ceil(file.size / chunkSize)
+    const randomPart = Math.random().toString(36).substring(2, 10)
+    const timePart = Date.now().toString(36)
+    const identifier = `apk_${randomPart}${timePart}_${file.size}`
+
+    let uploadedChunks = 0
+
+    // 逐个上传分片
+    for (let i = 1; i <= totalChunks; i++) {
+      const start = (i - 1) * chunkSize
+      const end = Math.min(start + chunkSize, file.size)
+      const chunk = file.slice(start, end)
+
+      // 上传分片
+      const formDataObj = new FormData()
+      formDataObj.append('file', chunk, `chunk_${i}`)
+      formDataObj.append('identifier', identifier)
+      formDataObj.append('chunkNumber', i.toString())
+      formDataObj.append('totalChunks', totalChunks.toString())
+      formDataObj.append('filename', file.name)
+
+      const uploadResponse = await fetch('/api/upload/chunk', {
+        method: 'POST',
+        body: formDataObj,
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+
+      if (!uploadResponse.ok) {
+        throw new Error(`分片 ${i} 上传失败: HTTP ${uploadResponse.status}`)
+      }
+
+      const uploadResult = await uploadResponse.json()
+      if (uploadResult.code !== 200) {
+        throw new Error(`分片 ${i} 上传失败: ${uploadResult.message}`)
+      }
+
+      uploadedChunks++
+      fileUploadProgress.value[fieldKey] = Math.round((uploadedChunks / totalChunks) * 90)
+    }
+
+    // 合并分片
+    const mergeEndpoint = field.mergeEndpoint || '/api/upload/chunk/merge/apk'
+    const mergeResponse = await fetch(mergeEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({ identifier, totalChunks, filename: file.name }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    })
+
+    if (!mergeResponse.ok) {
+      throw new Error(`合并失败: HTTP ${mergeResponse.status}`)
+    }
+
+    const mergeResult = await mergeResponse.json()
+    if (mergeResult.code !== 200) {
+      throw new Error(mergeResult.message || '合并失败')
+    }
+
+    fileUploadProgress.value[fieldKey] = 100
+    fileUploadNames.value[fieldKey] = file.name
+    updateField(fieldKey, mergeResult.data.url)
+  } catch (err) {
+    console.error('文件上传失败:', err)
+    fileUploadErrors.value[fieldKey] = err.message || '上传失败，请重试'
+  } finally {
+    fileUploading.value[fieldKey] = false
+  }
+}
+
+const removeFileUpload = (fieldKey) => {
+  updateField(fieldKey, '')
+  fileUploadNames.value[fieldKey] = ''
+  fileUploadErrors.value[fieldKey] = ''
+  if (fileUploadInputRefs.value[fieldKey]) {
+    fileUploadInputRefs.value[fieldKey].value = ''
+  }
+}
+
 // 暴露给父组件的方法和数据
 defineExpose({
   videoUploadRefs
@@ -1856,6 +2019,156 @@ defineExpose({
 /* 视频上传样式 */
 .video-upload-field {
   width: 100%;
+}
+
+/* 文件上传样式 */
+.file-upload-field {
+  width: 100%;
+}
+
+.file-upload-area {
+  width: 100%;
+  min-height: 100px;
+  border: 2px dashed var(--border-color-primary);
+  border-radius: 8px;
+  background: var(--bg-color-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  overflow: hidden;
+}
+
+.file-upload-area:hover {
+  border-color: var(--primary-color);
+  background: var(--bg-color-secondary);
+}
+
+.file-upload-area.drag-over {
+  border-color: var(--primary-color);
+  background: var(--bg-color-secondary);
+}
+
+.file-upload-area.has-file {
+  border-style: solid;
+  cursor: default;
+}
+
+.file-upload-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  color: var(--text-color-secondary);
+  padding: 16px;
+}
+
+.file-upload-placeholder .file-upload-icon {
+  font-size: 28px;
+  margin-bottom: 6px;
+}
+
+.file-upload-placeholder p {
+  margin: 2px 0;
+  font-size: 13px;
+}
+
+.file-upload-hint {
+  font-size: 11px !important;
+  color: var(--text-color-tertiary);
+}
+
+.file-upload-success {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 10px;
+}
+
+.file-upload-success .file-upload-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.file-upload-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.file-upload-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-color-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-upload-url {
+  font-size: 11px;
+  color: var(--text-color-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.file-upload-remove {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: var(--bg-color-tertiary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-color-secondary);
+  font-size: 16px;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.file-upload-remove:hover {
+  background: var(--danger-color);
+  color: white;
+}
+
+.file-upload-loading {
+  padding: 16px;
+  width: 100%;
+  text-align: center;
+}
+
+.file-upload-progress-bar {
+  width: 80%;
+  height: 6px;
+  background: var(--bg-color-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0 auto 8px;
+}
+
+.file-upload-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary-color), var(--success-color));
+  transition: width 0.3s ease;
+  border-radius: 3px;
+}
+
+.file-upload-progress-text {
+  font-size: 12px;
+  color: var(--text-color-secondary);
+  margin: 0;
+}
+
+.file-upload-error {
+  color: var(--danger-color);
+  font-size: 12px;
+  margin-top: 6px;
 }
 
 </style>

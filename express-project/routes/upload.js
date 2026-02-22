@@ -681,6 +681,101 @@ router.post('/chunk/merge/image', authenticateToken, async (req, res) => {
   }
 });
 
+// 合并APK分片
+router.post('/chunk/merge/apk', authenticateToken, async (req, res) => {
+  try {
+    const { identifier, totalChunks, filename } = req.body;
+    
+    if (!identifier || !totalChunks || !filename) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数'
+      });
+    }
+
+    // 验证文件扩展名
+    const ext = path.extname(filename).toLowerCase();
+    if (ext !== '.apk' && ext !== '.apks') {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '只允许上传 APK 或 APKS 文件'
+      });
+    }
+    
+    console.log(`🔄 开始合并APK分片 - 用户ID: ${req.user.id}, 文件名: ${filename}, 总分片数: ${totalChunks}`);
+    
+    // 确保所有分片都存在
+    const { complete, missingChunks } = await checkUploadComplete(identifier, parseInt(totalChunks));
+    if (!complete) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: `分片不完整，缺少: ${missingChunks.join(', ')}`
+      });
+    }
+    
+    // 生成输出文件路径
+    const uploadDir = path.join(process.cwd(), 'uploads/apk');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    const hash = crypto.createHash('md5').update(identifier + Date.now()).digest('hex');
+    const uniqueFilename = `${Date.now()}_${hash}${ext}`;
+    const outputPath = path.join(uploadDir, uniqueFilename);
+    
+    // 创建写入流，按顺序合并分片（使用流式读取减少内存压力）
+    const writeStream = fs.createWriteStream(outputPath);
+    
+    for (let i = 1; i <= parseInt(totalChunks); i++) {
+      const chunkPath = path.join(
+        process.cwd(), 
+        config.upload.video.chunk.tempDir, 
+        identifier, 
+        `chunk_${i}`
+      );
+      await new Promise((resolve, reject) => {
+        const readStream = fs.createReadStream(chunkPath);
+        readStream.on('error', reject);
+        readStream.on('end', resolve);
+        readStream.pipe(writeStream, { end: false });
+      });
+    }
+    
+    await new Promise((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      writeStream.end();
+    });
+    
+    // 清理分片目录
+    const chunkDir = path.join(process.cwd(), config.upload.video.chunk.tempDir, identifier);
+    if (fs.existsSync(chunkDir)) {
+      fs.rmSync(chunkDir, { recursive: true, force: true });
+    }
+    
+    // 返回访问URL
+    const baseUrl = config.upload.attachment?.local?.baseUrl || 'http://localhost:3001';
+    const url = `${baseUrl}/uploads/apk/${uniqueFilename}`;
+    
+    console.log(`✅ APK分片合并完成 - 用户ID: ${req.user.id}, 文件名: ${filename}, URL: ${url}`);
+    
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      message: 'APK上传成功',
+      data: {
+        originalname: filename,
+        url: url
+      }
+    });
+  } catch (error) {
+    console.error('APK分片合并失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: 'APK分片合并失败'
+    });
+  }
+});
+
 // 文件过滤器 - 附件
 const attachmentFileFilter = (req, file, cb) => {
   // 检查文件类型
@@ -777,18 +872,82 @@ router.post('/attachment', authenticateToken, attachmentUpload.single('file'), a
   }
 });
 
+// 文件过滤器 - APK/APKS
+const apkFileFilter = (req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (ext === '.apk' || ext === '.apks') {
+    cb(null, true);
+  } else {
+    cb(new Error('只允许上传 APK 或 APKS 文件'), false);
+  }
+};
+
+// 配置 multer - APK
+const apkUpload = multer({
+  storage: storage,
+  fileFilter: apkFileFilter,
+  limits: {
+    fileSize: 200 * 1024 * 1024 // 200MB 限制
+  }
+});
+
+// APK/APKS 上传
+router.post('/apk', authenticateToken, apkUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '没有上传文件' });
+    }
+
+    // 保存到本地
+    const uploadDir = path.join(process.cwd(), 'uploads/apk');
+
+    // 确保上传目录存在
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // 生成唯一文件名（MD5仅用于文件名去重，非安全用途）
+    const ext = path.extname(req.file.originalname);
+    const hash = crypto.createHash('md5').update(req.file.buffer).digest('hex');
+    const uniqueFilename = `${Date.now()}_${hash}${ext}`;
+    const filePath = path.join(uploadDir, uniqueFilename);
+
+    // 保存文件
+    fs.writeFileSync(filePath, req.file.buffer);
+
+    // 返回访问URL
+    const baseUrl = config.upload.attachment?.local?.baseUrl || 'http://localhost:3001';
+    const url = `${baseUrl}/uploads/apk/${uniqueFilename}`;
+
+    console.log(`APK上传成功 - 用户ID: ${req.user.id}, 文件名: ${req.file.originalname}`);
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      message: '上传成功',
+      data: {
+        originalname: req.file.originalname,
+        size: req.file.size,
+        url: url
+      }
+    });
+  } catch (error) {
+    console.error('APK上传失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '上传失败' });
+  }
+});
+
 // 错误处理中间件
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '文件大小超过限制（100MB）' });
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '文件大小超过限制' });
     }
     if (error.code === 'LIMIT_FILE_COUNT') {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '文件数量超过限制（9个）' });
     }
   }
 
-  if (error.message === '只允许上传图片文件' || error.message === '只允许上传视频文件' || error.message === '不支持的附件类型') {
+  if (error.message === '只允许上传图片文件' || error.message === '只允许上传视频文件' || error.message === '不支持的附件类型' || error.message === '只允许上传 APK 或 APKS 文件') {
     return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: error.message });
   }
 
