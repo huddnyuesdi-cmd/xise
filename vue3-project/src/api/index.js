@@ -941,6 +941,37 @@ export const adminApi = {
   // 保存版本数据到Redis
   saveAppVersionLastFormData(data) {
     return request.post('/admin/app-versions/last-form-data', data)
+  },
+
+  // ========== 授权管理 ==========
+  // 获取授权列表
+  getAuthorizations(params = {}) {
+    return request.get('/admin/authorizations', { params })
+  },
+
+  // 创建授权
+  createAuthorization(data) {
+    return request.post('/admin/authorizations', data)
+  },
+
+  // 更新授权
+  updateAuthorization(authId, data) {
+    return request.put(`/admin/authorizations/${authId}`, data)
+  },
+
+  // 删除授权
+  deleteAuthorization(authId) {
+    return request.delete(`/admin/authorizations/${authId}`)
+  },
+
+  // 批量删除授权
+  batchDeleteAuthorizations(ids) {
+    return request.delete('/admin/authorizations', { data: { ids } })
+  },
+
+  // 获取单个授权详情
+  getAuthorizationDetail(authId) {
+    return request.get(`/admin/authorizations/${authId}`)
   }
 }
 

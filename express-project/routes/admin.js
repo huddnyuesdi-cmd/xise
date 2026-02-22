@@ -5300,6 +5300,195 @@ router.delete('/app-versions', adminAuth, async (req, res) => {
   }
 })
 
+// ===================== 授权管理 (Authorization Management) =====================
+
+// 检查Authorization模型是否可用
+const isAuthorizationAvailable = () => {
+  return prisma.authorization !== undefined
+}
+
+// 获取授权列表
+router.get('/authorizations', adminAuth, async (req, res) => {
+  try {
+    if (!isAuthorizationAvailable()) {
+      return res.status(503).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '授权管理功能暂不可用，请先运行数据库迁移: npx prisma generate && npx prisma db push'
+      })
+    }
+
+    const page = parseInt(req.query.page) || 1
+    const limit = parseInt(req.query.limit) || 20
+    const skip = (page - 1) * limit
+    const { domain, status, sortField = 'created_at', sortOrder = 'desc' } = req.query
+
+    const where = {}
+    if (domain) where.domain = { contains: domain }
+    if (status !== undefined && status !== '') where.status = status === 'true' || status === '1'
+
+    const [total, authorizations] = await Promise.all([
+      prisma.authorization.count({ where }),
+      prisma.authorization.findMany({
+        where,
+        orderBy: { [sortField]: sortOrder.toLowerCase() },
+        take: limit,
+        skip: skip
+      })
+    ])
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: { data: authorizations, pagination: { page, limit, total, pages: Math.ceil(total / limit) } },
+      message: 'success'
+    })
+  } catch (error) {
+    console.error('获取授权列表失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取失败' })
+  }
+})
+
+// 获取单个授权详情
+router.get('/authorizations/:id', adminAuth, async (req, res) => {
+  try {
+    if (!isAuthorizationAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '授权管理功能暂不可用' })
+    }
+
+    const authId = BigInt(req.params.id)
+    const authorization = await prisma.authorization.findUnique({ where: { id: authId } })
+    if (!authorization) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '授权记录不存在' })
+    }
+    res.json({ code: RESPONSE_CODES.SUCCESS, data: authorization, message: 'success' })
+  } catch (error) {
+    console.error('获取授权详情失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '获取失败' })
+  }
+})
+
+// 创建授权
+router.post('/authorizations', adminAuth, async (req, res) => {
+  try {
+    if (!isAuthorizationAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '授权管理功能暂不可用' })
+    }
+
+    const { domain, ip_list, status, note, expires_at } = req.body
+    if (!domain || !domain.trim()) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '域名不能为空' })
+    }
+
+    // 验证IP列表格式
+    let parsedIpList = []
+    if (ip_list) {
+      parsedIpList = Array.isArray(ip_list) ? ip_list : [ip_list]
+      const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/
+      for (const ip of parsedIpList) {
+        if (typeof ip !== 'string' || !ipRegex.test(ip.trim())) {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: `无效的IP地址: ${ip}` })
+        }
+      }
+      parsedIpList = parsedIpList.map(ip => ip.trim())
+    }
+
+    const newAuth = await prisma.authorization.create({
+      data: {
+        domain: domain.trim(),
+        ip_list: parsedIpList,
+        status: status !== undefined ? Boolean(status) : true,
+        note: note || null,
+        expires_at: expires_at ? new Date(expires_at) : null
+      }
+    })
+
+    res.status(HTTP_STATUS.CREATED).json({ code: RESPONSE_CODES.SUCCESS, data: newAuth, message: '创建成功' })
+  } catch (error) {
+    console.error('创建授权失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '创建失败' })
+  }
+})
+
+// 更新授权
+router.put('/authorizations/:id', adminAuth, async (req, res) => {
+  try {
+    if (!isAuthorizationAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '授权管理功能暂不可用' })
+    }
+
+    const authId = BigInt(req.params.id)
+    const existing = await prisma.authorization.findUnique({ where: { id: authId } })
+    if (!existing) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '授权记录不存在' })
+    }
+
+    const { domain, ip_list, status, note, expires_at } = req.body
+    const updateData = {}
+
+    if (domain !== undefined) updateData.domain = domain.trim()
+    if (status !== undefined) updateData.status = Boolean(status)
+    if (note !== undefined) updateData.note = note || null
+    if (expires_at !== undefined) updateData.expires_at = expires_at ? new Date(expires_at) : null
+
+    if (ip_list !== undefined) {
+      let parsedIpList = Array.isArray(ip_list) ? ip_list : [ip_list]
+      const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/
+      for (const ip of parsedIpList) {
+        if (typeof ip !== 'string' || !ipRegex.test(ip.trim())) {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: `无效的IP地址: ${ip}` })
+        }
+      }
+      updateData.ip_list = parsedIpList.map(ip => ip.trim())
+    }
+
+    await prisma.authorization.update({ where: { id: authId }, data: updateData })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '更新成功' })
+  } catch (error) {
+    console.error('更新授权失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '更新失败' })
+  }
+})
+
+// 删除授权
+router.delete('/authorizations/:id', adminAuth, async (req, res) => {
+  try {
+    if (!isAuthorizationAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '授权管理功能暂不可用' })
+    }
+
+    const authId = BigInt(req.params.id)
+    const existing = await prisma.authorization.findUnique({ where: { id: authId } })
+    if (!existing) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ code: RESPONSE_CODES.NOT_FOUND, message: '授权记录不存在' })
+    }
+
+    await prisma.authorization.delete({ where: { id: authId } })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '删除成功' })
+  } catch (error) {
+    console.error('删除授权失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '删除失败' })
+  }
+})
+
+// 批量删除授权
+router.delete('/authorizations', adminAuth, async (req, res) => {
+  try {
+    if (!isAuthorizationAvailable()) {
+      return res.status(503).json({ code: RESPONSE_CODES.ERROR, message: '授权管理功能暂不可用' })
+    }
+
+    const { ids } = req.body
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ code: RESPONSE_CODES.VALIDATION_ERROR, message: '请提供要删除的ID列表' })
+    }
+
+    await prisma.authorization.deleteMany({ where: { id: { in: ids.map(id => BigInt(id)) } } })
+    res.json({ code: RESPONSE_CODES.SUCCESS, message: '成功删除 ' + ids.length + ' 条记录' })
+  } catch (error) {
+    console.error('批量删除授权失败:', error)
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ code: RESPONSE_CODES.ERROR, message: '删除失败' })
+  }
+})
+
 module.exports = router
 module.exports.isAiAutoReviewEnabled = isAiAutoReviewEnabled
 module.exports.isAiUsernameReviewEnabled = isAiUsernameReviewEnabled

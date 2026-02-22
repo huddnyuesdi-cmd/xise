@@ -487,6 +487,81 @@ app.post('/api/app/report-event', async (req, res) => {
   }
 });
 
+// 公开API：授权检测（无需认证）
+app.get('/api/auth/check-authorization', async (req, res) => {
+  try {
+    const { domain, ip } = req.query;
+
+    if (!domain) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        code: RESPONSE_CODES.VALIDATION_ERROR,
+        message: '缺少必要参数: domain'
+      });
+    }
+
+    // 检查Authorization模型是否可用
+    if (!prisma.authorization) {
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+        code: RESPONSE_CODES.ERROR,
+        message: '授权检测功能暂不可用'
+      });
+    }
+
+    // 查找匹配域名的授权记录
+    const authorization = await prisma.authorization.findFirst({
+      where: {
+        domain: domain,
+        status: true
+      }
+    });
+
+    if (!authorization) {
+      return res.json({
+        code: RESPONSE_CODES.SUCCESS,
+        data: { authorized: false },
+        message: '未找到授权记录'
+      });
+    }
+
+    // 检查是否过期
+    if (authorization.expires_at && new Date(authorization.expires_at) < new Date()) {
+      return res.json({
+        code: RESPONSE_CODES.SUCCESS,
+        data: { authorized: false },
+        message: '授权已过期'
+      });
+    }
+
+    // 如果提供了IP，检查IP是否在授权列表中
+    if (ip) {
+      const ipList = Array.isArray(authorization.ip_list) ? authorization.ip_list : [];
+      if (ipList.length > 0 && !ipList.includes(ip)) {
+        return res.json({
+          code: RESPONSE_CODES.SUCCESS,
+          data: { authorized: false },
+          message: 'IP未在授权列表中'
+        });
+      }
+    }
+
+    res.json({
+      code: RESPONSE_CODES.SUCCESS,
+      data: {
+        authorized: true,
+        domain: authorization.domain,
+        expires_at: authorization.expires_at
+      },
+      message: '授权有效'
+    });
+  } catch (error) {
+    console.error('授权检测失败:', error);
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
+      code: RESPONSE_CODES.ERROR,
+      message: '授权检测失败'
+    });
+  }
+});
+
 // 错误处理中间件
 app.use((err, req, res, next) => {
   console.error('服务器错误:', err);
