@@ -778,3 +778,20 @@ model AppUsageLog {
   @@index([created_at], name: "idx_app_usage_log_created_at")
   @@map("app_usage_logs")
 }
+
+// 授权管理表
+model Authorization {
+  id         BigInt   @id @default(autoincrement())
+  domain     String   @db.VarChar(255) // 授权域名
+  ip_list    Json     // 绑定的IP列表，存储为JSON数组 ["1.2.3.4", "5.6.7.8"]
+  status     Boolean  @default(true) // 授权状态：true=启用, false=禁用
+  note       String?  @db.VarChar(500) // 备注信息
+  expires_at DateTime? // 授权过期时间，null表示永久
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([domain], name: "idx_authorization_domain")
+  @@index([status], name: "idx_authorization_status")
+  @@index([expires_at], name: "idx_authorization_expires_at")
+  @@map("authorizations")
+}

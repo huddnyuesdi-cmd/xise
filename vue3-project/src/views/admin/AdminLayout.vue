@@ -285,7 +285,8 @@ const menuItems = [
   { path: '/admin/banned-words', title: '违禁词管理', icon: 'unpassed' },
   { path: '/admin/queues', title: '队列管理', icon: 'data' },
   { path: '/admin/admins', title: '管理员管理', icon: 'admin' },
-  { path: '/admin/app-versions', title: '应用管理', icon: 'setting' }
+  { path: '/admin/app-versions', title: '应用管理', icon: 'setting' },
+  { path: '/admin/authorizations', title: '授权管理', icon: 'verified' }
 ]
 
 // 当前页面标题
@@ -316,7 +317,8 @@ const currentPageDescription = computed(() => {
     '/admin/audit': '管理用户认证申请，审核通过或拒绝',
     '/admin/banned-words': '管理本地违禁词，支持通配符',
     '/admin/admins': '管理系统管理员账号',
-    '/admin/app-versions': '管理App版本，检测更新和推送App更新'
+    '/admin/app-versions': '管理App版本，检测更新和推送App更新',
+    '/admin/authorizations': '管理域名授权，支持单IP/多IP绑定域名'
   }
   return descriptions[route.path]
 })
